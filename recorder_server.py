@@ -253,7 +253,8 @@ HTML_PAGE = """
             ws = new WebSocket(protocol + location.host + '/ws/logs');
             ws.onmessage = e => {
                 let logs = document.getElementById('logs');
-                logs.textContent += `${e.data}\n`;
+                let escapedData = e.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                logs.innerHTML += escapedData.replace(/\n/g, '<br>') + '<br>';
                 logs.scrollTop = logs.scrollHeight;
             };
         }
