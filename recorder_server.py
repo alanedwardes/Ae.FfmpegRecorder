@@ -287,7 +287,7 @@ HTML_PAGE = """
                 let logEntry = JSON.parse(e.data);
                 let escapedData = logEntry.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 let color = logEntry.type === 'stderr' ? '#ff6b6b' : '#ffffff';
-                logs.innerHTML += `<span style="color: ${color}">${escapedData.replace(/\n/g, '<br>')}</span><br>`;
+                logs.innerHTML += `<span style="color: ${color}">${escapedData.replace(/\\n/g, '<br>')}</span><br>`;
                 logs.scrollTop = logs.scrollHeight;
             };
         }
