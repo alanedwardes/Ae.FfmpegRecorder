@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 import glob
+import queue
 
 app = FastAPI()
 
@@ -37,6 +38,7 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 ffmpeg_process = None
 ffmpeg_thread = None
 ffmpeg_log_lines = []
+ffmpeg_log_queue = queue.Queue()
 ws_connections = set()
 
 # --- FFMPEG Process Management ---
@@ -55,13 +57,7 @@ def ffmpeg_worker(cmd):
     try:
         for line in ffmpeg_process.stdout:
             ffmpeg_log_lines.append(line)
-            # Broadcast to all websockets
-            for ws in list(ws_connections):
-                try:
-                    import asyncio
-                    asyncio.run(ws.send_text(line))
-                except Exception:
-                    pass
+            ffmpeg_log_queue.put(line)
     finally:
         ffmpeg_process = None
 
@@ -115,7 +111,12 @@ async def websocket_logs(ws: WebSocket):
         for line in ffmpeg_log_lines[-200:]:
             await ws.send_text(line)
         while True:
-            await ws.receive_text()  # keep alive
+            # Send new log lines from the queue
+            try:
+                line = ffmpeg_log_queue.get(timeout=1)
+                await ws.send_text(line)
+            except queue.Empty:
+                pass
     except WebSocketDisconnect:
         pass
     finally:
