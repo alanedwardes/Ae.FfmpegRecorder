@@ -50,6 +50,7 @@ ffmpeg_thread = None
 ffmpeg_log_lines = deque(maxlen=2000)
 ffmpeg_log_queue = queue.Queue()
 ws_connections = set()
+shutdown_event = threading.Event()
 
 # --- FFMPEG Process Management ---
 def get_output_filename():
@@ -68,6 +69,8 @@ def ffmpeg_worker(cmd):
     def read_output(pipe, is_stderr=False):
         try:
             for line in pipe:
+                if shutdown_event.is_set():
+                    break
                 log_entry = {"type": "stderr" if is_stderr else "stdout", "data": line}
                 ffmpeg_log_lines.append(log_entry)
                 ffmpeg_log_queue.put(log_entry)
@@ -140,7 +143,7 @@ async def websocket_logs(ws: WebSocket):
         # Send last 200 lines on connect
         for log_entry in list(ffmpeg_log_lines)[-200:]:
             await ws.send_json(log_entry)
-        while True:
+        while not shutdown_event.is_set():
             sent = False
             try:
                 # Drain all available log lines
@@ -180,6 +183,20 @@ def delete_file(filename: str):
         return JSONResponse({"error": "File not found"}, status_code=404)
     os.remove(file_path)
     return {"deleted": True}
+
+# --- Shutdown Handler ---
+@app.on_event("shutdown")
+async def shutdown_event_handler():
+    global ffmpeg_process, shutdown_event
+    shutdown_event.set()
+    if ffmpeg_process and ffmpeg_process.poll() is None:
+        try:
+            ffmpeg_process.terminate()
+            ffmpeg_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            ffmpeg_process.kill()
+        except:
+            pass
 
 # --- Simple HTML/JS Frontend ---
 HTML_PAGE = """
