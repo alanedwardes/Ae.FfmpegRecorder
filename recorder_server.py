@@ -62,12 +62,26 @@ def is_recording():
 
 def ffmpeg_worker(cmd):
     global ffmpeg_process, ffmpeg_log_lines
-    ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     ffmpeg_log_lines.clear()
+    
+    def read_output(pipe, is_stderr=False):
+        try:
+            for line in pipe:
+                log_entry = {"type": "stderr" if is_stderr else "stdout", "data": line}
+                ffmpeg_log_lines.append(log_entry)
+                ffmpeg_log_queue.put(log_entry)
+        except:
+            pass
+    
+    stdout_thread = threading.Thread(target=read_output, args=(ffmpeg_process.stdout, False), daemon=True)
+    stderr_thread = threading.Thread(target=read_output, args=(ffmpeg_process.stderr, True), daemon=True)
+    
+    stdout_thread.start()
+    stderr_thread.start()
+    
     try:
-        for line in ffmpeg_process.stdout:
-            ffmpeg_log_lines.append(line)
-            ffmpeg_log_queue.put(line)
+        ffmpeg_process.wait()
     finally:
         ffmpeg_process = None
 
@@ -124,15 +138,15 @@ async def websocket_logs(ws: WebSocket):
     ws_connections.add(ws)
     try:
         # Send last 200 lines on connect
-        for line in list(ffmpeg_log_lines)[-200:]:
-            await ws.send_text(line)
+        for log_entry in list(ffmpeg_log_lines)[-200:]:
+            await ws.send_json(log_entry)
         while True:
             sent = False
             try:
                 # Drain all available log lines
                 while True:
-                    line = ffmpeg_log_queue.get_nowait()
-                    await ws.send_text(line)
+                    log_entry = ffmpeg_log_queue.get_nowait()
+                    await ws.send_json(log_entry)
                     sent = True
             except queue.Empty:
                 pass
@@ -253,8 +267,10 @@ HTML_PAGE = """
             ws = new WebSocket(protocol + location.host + '/ws/logs');
             ws.onmessage = e => {
                 let logs = document.getElementById('logs');
-                let escapedData = e.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                logs.innerHTML += escapedData.replace(/\n/g, '<br>') + '<br>';
+                let logEntry = JSON.parse(e.data);
+                let escapedData = logEntry.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                let color = logEntry.type === 'stderr' ? '#ff6b6b' : '#ffffff';
+                logs.innerHTML += `<span style="color: ${color}">${escapedData.replace(/\n/g, '<br>')}</span><br>`;
                 logs.scrollTop = logs.scrollHeight;
             };
         }
