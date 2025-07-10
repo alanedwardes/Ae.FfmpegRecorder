@@ -12,6 +12,7 @@ from typing import Optional, List
 import glob
 import queue
 import asyncio
+from collections import deque
 
 app = FastAPI()
 
@@ -26,11 +27,19 @@ app.add_middleware(
 
 RECORDINGS_DIR = "recordings"
 BITRATES = ["500k", "1M", "2M", "4M"]
+RESOLUTIONS = [
+    ("640x360", "360p"),
+    ("1280x720", "720p"),
+    ("1920x1080", "1080p"),
+    ("3840x2160", "4K"),
+]
+DEFAULT_BITRATE = "2M"
+DEFAULT_RESOLUTION = "1280x720"
 
 FFMPEG_CMD_TEMPLATE = (
     "/usr/bin/ffmpeg -y "
     "-f alsa -i hw:0 "
-    "-f v4l2 -input_format mjpeg -framerate 30 -video_size 1280x720 -i /dev/video0 "
+    "-f v4l2 -input_format mjpeg -framerate 30 -video_size {resolution} -i /dev/video0 "
     "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
 )
 
@@ -38,7 +47,7 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
 ffmpeg_process = None
 ffmpeg_thread = None
-ffmpeg_log_lines = []
+ffmpeg_log_lines = deque(maxlen=2000)
 ffmpeg_log_queue = queue.Queue()
 ws_connections = set()
 
@@ -54,7 +63,7 @@ def is_recording():
 def ffmpeg_worker(cmd):
     global ffmpeg_process, ffmpeg_log_lines
     ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    ffmpeg_log_lines = []
+    ffmpeg_log_lines.clear()
     try:
         for line in ffmpeg_process.stdout:
             ffmpeg_log_lines.append(line)
@@ -62,8 +71,8 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
-def build_ffmpeg_cmd(bitrate, output_file):
-    return FFMPEG_CMD_TEMPLATE.format(bitrate=bitrate, output_file=output_file).split()
+def build_ffmpeg_cmd(bitrate, output_file, resolution):
+    return FFMPEG_CMD_TEMPLATE.format(bitrate=bitrate, output_file=output_file, resolution=resolution).split()
 
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
@@ -72,21 +81,27 @@ def index():
 
 @app.get("/bitrates")
 def get_bitrates():
-    return {"bitrates": BITRATES}
+    return {"bitrates": BITRATES, "default": DEFAULT_BITRATE}
+
+@app.get("/resolutions")
+def get_resolutions():
+    return {"resolutions": [{"value": r[0], "label": r[1]} for r in RESOLUTIONS], "default": DEFAULT_RESOLUTION}
 
 @app.get("/status")
 def status():
     return {"recording": is_recording()}
 
 @app.post("/start")
-def start_recording(bitrate: str):
+def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION):
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
     if bitrate not in BITRATES:
         return JSONResponse({"error": "Invalid bitrate"}, status_code=400)
+    if resolution not in [r[0] for r in RESOLUTIONS]:
+        return JSONResponse({"error": "Invalid resolution"}, status_code=400)
     output_file = get_output_filename()
-    cmd = build_ffmpeg_cmd(bitrate, output_file)
+    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
@@ -101,7 +116,7 @@ def stop_recording():
 
 @app.get("/logs")
 def get_logs():
-    return {"logs": ffmpeg_log_lines[-200:]}  # last 200 lines
+    return {"logs": list(ffmpeg_log_lines)[-200:]}  # last 200 lines
 
 @app.websocket("/ws/logs")
 async def websocket_logs(ws: WebSocket):
@@ -109,7 +124,7 @@ async def websocket_logs(ws: WebSocket):
     ws_connections.add(ws)
     try:
         # Send last 200 lines on connect
-        for line in ffmpeg_log_lines[-200:]:
+        for line in list(ffmpeg_log_lines)[-200:]:
             await ws.send_text(line)
         while True:
             sent = False
@@ -171,6 +186,8 @@ HTML_PAGE = """
     <div>
         <label for="bitrate">Bitrate:</label>
         <select id="bitrate"></select>
+        <label for="resolution">Resolution:</label>
+        <select id="resolution"></select>
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
     </div>
@@ -184,9 +201,23 @@ HTML_PAGE = """
         function fetchBitrates() {
             fetch('/bitrates').then(r => r.json()).then(d => {
                 let sel = document.getElementById('bitrate');
+                sel.innerHTML = '';
                 d.bitrates.forEach(b => {
                     let o = document.createElement('option');
                     o.value = b; o.text = b;
+                    if (b === d.default) o.selected = true;
+                    sel.appendChild(o);
+                });
+            });
+        }
+        function fetchResolutions() {
+            fetch('/resolutions').then(r => r.json()).then(d => {
+                let sel = document.getElementById('resolution');
+                sel.innerHTML = '';
+                d.resolutions.forEach(r => {
+                    let o = document.createElement('option');
+                    o.value = r.value; o.text = r.label;
+                    if (r.value === d.default) o.selected = true;
                     sel.appendChild(o);
                 });
             });
@@ -200,7 +231,9 @@ HTML_PAGE = """
         }
         function startRecording() {
             let bitrate = document.getElementById('bitrate').value;
-            fetch('/start?bitrate=' + encodeURIComponent(bitrate), {method: 'POST'})
+            let resolution = document.getElementById('resolution').value;
+            let params = new URLSearchParams({bitrate, resolution});
+            fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
                     updateStatus();
@@ -215,11 +248,12 @@ HTML_PAGE = """
                 });
         }
         function connectLogs() {
+            let protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
             if (ws) ws.close();
-            ws = new WebSocket('ws://' + location.host + '/ws/logs');
+            ws = new WebSocket(protocol + location.host + '/ws/logs');
             ws.onmessage = e => {
                 let logs = document.getElementById('logs');
-                logs.textContent += e.data;
+                logs.textContent += e.data + '\n';
                 logs.scrollTop = logs.scrollHeight;
             };
         }
@@ -244,6 +278,7 @@ HTML_PAGE = """
         document.getElementById('startBtn').onclick = startRecording;
         document.getElementById('stopBtn').onclick = stopRecording;
         fetchBitrates();
+        fetchResolutions();
         updateStatus();
         loadFiles();
         connectLogs();
