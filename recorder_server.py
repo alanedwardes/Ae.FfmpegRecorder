@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 import glob
 import queue
+import asyncio
 
 app = FastAPI()
 
@@ -111,12 +112,17 @@ async def websocket_logs(ws: WebSocket):
         for line in ffmpeg_log_lines[-200:]:
             await ws.send_text(line)
         while True:
-            # Send new log lines from the queue
+            sent = False
             try:
-                line = ffmpeg_log_queue.get(timeout=1)
-                await ws.send_text(line)
+                # Drain all available log lines
+                while True:
+                    line = ffmpeg_log_queue.get_nowait()
+                    await ws.send_text(line)
+                    sent = True
             except queue.Empty:
                 pass
+            if not sent:
+                await asyncio.sleep(0.2)
     except WebSocketDisconnect:
         pass
     finally:
