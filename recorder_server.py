@@ -159,6 +159,12 @@ async def websocket_logs(ws: WebSocket):
         pass
     finally:
         ws_connections.discard(ws)
+        # Ensure websocket is closed on shutdown
+        if shutdown_event.is_set():
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
 @app.get("/files")
 def list_files():
@@ -189,6 +195,12 @@ def delete_file(filename: str):
 async def shutdown_event_handler():
     global ffmpeg_process, shutdown_event
     shutdown_event.set()
+    # Close all websocket connections
+    for ws in list(ws_connections):
+        try:
+            await ws.close()
+        except Exception:
+            pass
     if ffmpeg_process and ffmpeg_process.poll() is None:
         try:
             ffmpeg_process.terminate()
