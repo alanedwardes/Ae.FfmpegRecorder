@@ -24,17 +24,13 @@ app.add_middleware(
 
 RECORDINGS_DIR = "recordings"
 BITRATES = ["500k", "1M", "2M", "4M"]
-FFMPEG_CMD_TEMPLATE = [
-    "ffmpeg", "-y",
-    "-f", "alsa", "-i", "hw:0",
-    "-f", "v4l2", "-input_format", "mjpeg", "-framerate", "30", "-video_size", "1280x720", "-i", "/dev/video0",
-    "-b:v", None,  # to be filled
-    "-b:a", "192k",
-    "-c:v", "libx264",
-    "-c:a", "aac",
-    "-pix_fmt", "yuv420p",
-    None  # output filename
-]
+
+FFMPEG_CMD_TEMPLATE = (
+    "/usr/bin/ffmpeg -y "
+    "-f alsa -i hw:0 "
+    "-f v4l2 -input_format mjpeg -framerate 30 -video_size 1280x720 -i /dev/video0 "
+    "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
+)
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
@@ -69,6 +65,9 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
+def build_ffmpeg_cmd(bitrate, output_file):
+    return FFMPEG_CMD_TEMPLATE.format(bitrate=bitrate, output_file=output_file).split()
+
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -90,9 +89,7 @@ def start_recording(bitrate: str):
     if bitrate not in BITRATES:
         return JSONResponse({"error": "Invalid bitrate"}, status_code=400)
     output_file = get_output_filename()
-    cmd = FFMPEG_CMD_TEMPLATE[:]
-    cmd[14] = bitrate
-    cmd[-1] = output_file
+    cmd = build_ffmpeg_cmd(bitrate, output_file)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
