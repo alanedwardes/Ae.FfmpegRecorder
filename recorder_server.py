@@ -196,7 +196,7 @@ async def websocket_logs(ws: WebSocket):
 
 @app.get("/files")
 def list_files():
-    files = sorted(glob.glob(os.path.join(RECORDINGS_DIR, "output-*.mp4")), reverse=True)
+    files = sorted([os.path.join(RECORDINGS_DIR, f) for f in os.listdir(RECORDINGS_DIR) if os.path.isfile(os.path.join(RECORDINGS_DIR, f))], reverse=True)
     return [{
         "name": os.path.basename(f),
         "size": os.path.getsize(f),
