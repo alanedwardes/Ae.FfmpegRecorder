@@ -35,13 +35,26 @@ RESOLUTIONS = [
 ]
 DEFAULT_BITRATE = "2M"
 DEFAULT_RESOLUTION = "1280x720"
+FORMATS = [
+    {"value": "mp4", "label": "MP4 (H.264)"},
+    {"value": "avi", "label": "AVI (DivX)"},
+]
+DEFAULT_FORMAT = "mp4"
 
-FFMPEG_CMD_TEMPLATE = (
-    "/usr/bin/ffmpeg -y "
-    "-f alsa -i hw:0 "
-    "-f v4l2 -input_format mjpeg -framerate 30 -video_size {resolution} -i /dev/video0 "
-    "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
-)
+FFMPEG_CMD_TEMPLATES = {
+    "mp4": (
+        "/usr/bin/ffmpeg -y "
+        "-f alsa -i hw:0 "
+        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
+        "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
+    ),
+    "avi": (
+        "/usr/bin/ffmpeg -y "
+        "-f alsa -i hw:0 "
+        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
+        "-b:v {bitrate} -b:a 192k -c:v mpeg4 -vtag DX50 -c:a libmp3lame {output_file}"
+    ),
+}
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
@@ -53,9 +66,10 @@ ws_connections = set()
 shutdown_event = threading.Event()
 
 # --- FFMPEG Process Management ---
-def get_output_filename():
+def get_output_filename(format=DEFAULT_FORMAT):
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return os.path.join(RECORDINGS_DIR, f"output-{ts}.mp4")
+    ext = ".mp4" if format == "mp4" else ".avi"
+    return os.path.join(RECORDINGS_DIR, f"output-{ts}{ext}")
 
 def is_recording():
     global ffmpeg_process
@@ -88,8 +102,9 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
-def build_ffmpeg_cmd(bitrate, output_file, resolution):
-    return FFMPEG_CMD_TEMPLATE.format(bitrate=bitrate, output_file=output_file, resolution=resolution).split()
+def build_ffmpeg_cmd(bitrate, output_file, resolution, format=DEFAULT_FORMAT):
+    template = FFMPEG_CMD_TEMPLATES[format]
+    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution).split()
 
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
@@ -104,12 +119,16 @@ def get_bitrates():
 def get_resolutions():
     return {"resolutions": [{"value": r[0], "label": r[1]} for r in RESOLUTIONS], "default": DEFAULT_RESOLUTION}
 
+@app.get("/formats")
+def get_formats():
+    return {"formats": FORMATS, "default": DEFAULT_FORMAT}
+
 @app.get("/status")
 def status():
     return {"recording": is_recording()}
 
 @app.post("/start")
-def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION):
+def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, format: str = DEFAULT_FORMAT):
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
@@ -117,8 +136,10 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
         return JSONResponse({"error": "Invalid bitrate"}, status_code=400)
     if resolution not in [r[0] for r in RESOLUTIONS]:
         return JSONResponse({"error": "Invalid resolution"}, status_code=400)
-    output_file = get_output_filename()
-    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution)
+    if format not in [f["value"] for f in FORMATS]:
+        return JSONResponse({"error": "Invalid format"}, status_code=400)
+    output_file = get_output_filename(format)
+    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, format)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
@@ -231,6 +252,8 @@ HTML_PAGE = """
         <select id="bitrate"></select>
         <label for="resolution">Resolution:</label>
         <select id="resolution"></select>
+        <label for="format">Format:</label>
+        <select id="format"></select>
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
     </div>
@@ -265,6 +288,18 @@ HTML_PAGE = """
                 });
             });
         }
+        function fetchFormats() {
+            fetch('/formats').then(r => r.json()).then(d => {
+                let sel = document.getElementById('format');
+                sel.innerHTML = '';
+                d.formats.forEach(f => {
+                    let o = document.createElement('option');
+                    o.value = f.value; o.text = f.label;
+                    if (f.value === d.default) o.selected = true;
+                    sel.appendChild(o);
+                });
+            });
+        }
         function updateStatus() {
             fetch('/status').then(r => r.json()).then(d => {
                 document.getElementById('startBtn').disabled = d.recording;
@@ -275,7 +310,8 @@ HTML_PAGE = """
         function startRecording() {
             let bitrate = document.getElementById('bitrate').value;
             let resolution = document.getElementById('resolution').value;
-            let params = new URLSearchParams({bitrate, resolution});
+            let format = document.getElementById('format').value;
+            let params = new URLSearchParams({bitrate, resolution, format});
             fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
@@ -324,6 +360,7 @@ HTML_PAGE = """
         document.getElementById('stopBtn').onclick = stopRecording;
         fetchBitrates();
         fetchResolutions();
+        fetchFormats();
         updateStatus();
         loadFiles();
         connectLogs();
