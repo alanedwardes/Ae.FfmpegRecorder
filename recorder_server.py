@@ -51,13 +51,13 @@ DEFAULT_FORMAT = "mp4"
 FFMPEG_CMD_TEMPLATES = {
     "mp4": (
         "/usr/bin/ffmpeg -y "
-        "-f alsa -i hw:0 "
+        "-f alsa -i hw:CARD=Generic_1,DEV=0 "
         "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
         "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
     ),
     "avi": (
         "/usr/bin/ffmpeg -y "
-        "-f alsa -i hw:0 "
+        "-f alsa -i hw:CARD=Generic_1,DEV=0 "
         "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
         "-b:v {bitrate} -b:a 192k -c:v mpeg4 -vtag DX50 -c:a libmp3lame {output_file}"
     ),
