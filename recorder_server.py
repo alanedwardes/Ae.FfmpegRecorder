@@ -409,7 +409,7 @@ HTML_PAGE = """
         function fetchAudioDevices() {
             fetch('/audio-devices').then(r => r.json()).then(d => {
                 let sel = document.getElementById('audio_device');
-                sel.innerHTML = '<option value="">Select Audio Device</option>';
+                sel.innerHTML = '';
                 d.audio_devices.forEach(d => {
                     let o = document.createElement('option');
                     o.value = d.value; o.text = d.label;
@@ -421,7 +421,7 @@ HTML_PAGE = """
         function fetchVideoDevices() {
             fetch('/video-devices').then(r => r.json()).then(d => {
                 let sel = document.getElementById('video_device');
-                sel.innerHTML = '<option value="">Select Video Device</option>';
+                sel.innerHTML = '';
                 d.video_devices.forEach(d => {
                     let o = document.createElement('option');
                     o.value = d.value; o.text = d.label;
