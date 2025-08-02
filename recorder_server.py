@@ -64,16 +64,26 @@ def get_audio_devices():
                 continue
                 
             if not line.startswith(' ') and not line.startswith('\t'):
+                # This is a device name
                 current_device = line
-            elif line.startswith(' ') or line.startswith('\t'):
+                # Add the device if it's not null
                 if current_device and current_device != 'null':
                     devices.append({
                         "value": current_device,
-                        "label": f"{current_device} - {line.strip()}"
+                        "label": current_device
                     })
+            elif line.startswith(' ') or line.startswith('\t'):
+                # This is a description line
+                if current_device and current_device != 'null':
+                    # Update the label with the description
+                    for device in devices:
+                        if device["value"] == current_device:
+                            device["label"] = f"{current_device} - {line.strip()}"
+                            break
         
         return devices
     except Exception as e:
+        print(f"Error getting audio devices: {e}")
         return []
 
 def get_video_devices():
@@ -91,10 +101,10 @@ def get_video_devices():
                 continue
                 
             if not line.startswith('\t'):
+                # This is a device name
                 current_device = line
-            elif line.startswith('\t') and line.endswith(':'):
-                continue
             elif line.startswith('\t'):
+                # This is a device path
                 if current_device and line.startswith('/dev/video'):
                     devices.append({
                         "value": line.strip(),
@@ -103,6 +113,7 @@ def get_video_devices():
         
         return devices
     except Exception as e:
+        print(f"Error getting video devices: {e}")
         return []
 
 AUDIO_DEVICES = get_audio_devices()
