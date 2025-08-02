@@ -124,9 +124,6 @@ def get_video_devices():
         print(f"Error getting video devices: {e}")
         return []
 
-AUDIO_DEVICES = get_audio_devices()
-VIDEO_DEVICES = get_video_devices()
-
 FFMPEG_CMD_TEMPLATES = {
     "mp4": (
         "/usr/bin/ffmpeg -y "
@@ -211,11 +208,17 @@ def get_formats():
 
 @app.get("/audio-devices")
 def get_audio_devices_endpoint():
-    return {"audio_devices": AUDIO_DEVICES}
+    devices = get_audio_devices()
+    if devices:
+        devices[0]["default"] = True
+    return {"audio_devices": devices}
 
 @app.get("/video-devices")
 def get_video_devices_endpoint():
-    return {"video_devices": VIDEO_DEVICES}
+    devices = get_video_devices()
+    if devices:
+        devices[0]["default"] = True
+    return {"video_devices": devices}
 
 @app.get("/status")
 def status():
@@ -232,9 +235,9 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
         return JSONResponse({"error": "Invalid resolution"}, status_code=400)
     if format not in [f["value"] for f in FORMATS]:
         return JSONResponse({"error": "Invalid format"}, status_code=400)
-    if not audio_device or audio_device not in [d["value"] for d in AUDIO_DEVICES]:
+    if not audio_device or audio_device not in [d["value"] for d in get_audio_devices()]:
         return JSONResponse({"error": "Valid audio device is required"}, status_code=400)
-    if not video_device or video_device not in [d["value"] for d in VIDEO_DEVICES]:
+    if not video_device or video_device not in [d["value"] for d in get_video_devices()]:
         return JSONResponse({"error": "Valid video device is required"}, status_code=400)
     output_file = get_output_filename(format)
     cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format)
@@ -409,6 +412,7 @@ HTML_PAGE = """
                 d.audio_devices.forEach(d => {
                     let o = document.createElement('option');
                     o.value = d.value; o.text = d.label;
+                    if (d.default) o.selected = true; // Select the default device
                     sel.appendChild(o);
                 });
             });
@@ -420,6 +424,7 @@ HTML_PAGE = """
                 d.video_devices.forEach(d => {
                     let o = document.createElement('option');
                     o.value = d.value; o.text = d.label;
+                    if (d.default) o.selected = true; // Select the default device
                     sel.appendChild(o);
                 });
             });
