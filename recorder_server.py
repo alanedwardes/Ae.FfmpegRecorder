@@ -103,19 +103,20 @@ def get_video_devices():
         current_device = None
         
         for line in result.stdout.split('\n'):
+            original_line = line
             line = line.strip()
             if not line:
                 continue
                 
-            if not line.startswith('\t') and not line.startswith(' '):
+            if not original_line.startswith('\t') and not original_line.startswith(' '):
                 # This is a device name (remove trailing colon)
                 current_device = line.rstrip(':')
-            elif line.startswith('\t') or line.startswith(' '):
+            elif original_line.startswith('\t') or original_line.startswith(' '):
                 # This is a device path
                 if current_device and line.startswith('/dev/video'):
                     devices.append({
-                        "value": line.strip(),
-                        "label": f"{current_device} - {line.strip()}"
+                        "value": line,
+                        "label": f"{current_device} - {line}"
                     })
         
         print(f"Found video devices: {devices}")
