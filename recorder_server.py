@@ -107,10 +107,10 @@ def get_video_devices():
             if not line:
                 continue
                 
-            if not line.startswith('\t'):
+            if not line.startswith('\t') and not line.startswith(' '):
                 # This is a device name (remove trailing colon)
                 current_device = line.rstrip(':')
-            elif line.startswith('\t'):
+            elif line.startswith('\t') or line.startswith(' '):
                 # This is a device path
                 if current_device and line.startswith('/dev/video'):
                     devices.append({
