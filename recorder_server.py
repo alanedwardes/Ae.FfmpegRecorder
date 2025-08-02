@@ -52,6 +52,9 @@ DEFAULT_FORMAT = "mp4"
 def get_audio_devices():
     try:
         result = subprocess.run(['arecord', '-L'], capture_output=True, text=True, timeout=10)
+        print(f"Audio command return code: {result.returncode}")
+        print(f"Audio command stdout: {result.stdout}")
+        print(f"Audio command stderr: {result.stderr}")
         if result.returncode != 0:
             return []
         
@@ -81,6 +84,7 @@ def get_audio_devices():
                             device["label"] = f"{current_device} - {line.strip()}"
                             break
         
+        print(f"Found audio devices: {devices}")
         return devices
     except Exception as e:
         print(f"Error getting audio devices: {e}")
@@ -89,6 +93,9 @@ def get_audio_devices():
 def get_video_devices():
     try:
         result = subprocess.run(['v4l2-ctl', '--list-devices'], capture_output=True, text=True, timeout=10)
+        print(f"Video command return code: {result.returncode}")
+        print(f"Video command stdout: {result.stdout}")
+        print(f"Video command stderr: {result.stderr}")
         if result.returncode != 0:
             return []
         
@@ -111,6 +118,7 @@ def get_video_devices():
                         "label": f"{current_device} - {line.strip()}"
                     })
         
+        print(f"Found video devices: {devices}")
         return devices
     except Exception as e:
         print(f"Error getting video devices: {e}")
