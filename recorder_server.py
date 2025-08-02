@@ -17,22 +17,16 @@ from collections import deque
 
 from contextlib import asynccontextmanager
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    # Shutdown
+def signal_handler(signum, frame):
     shutdown_event.set()
-    # Close all WebSocket connections
-    for ws in list(ws_connections):
-        try:
-            await ws.close()
-        except:
-            pass
-    ws_connections.clear()
     if ffmpeg_process and ffmpeg_process.poll() is None:
         ffmpeg_process.terminate()
+    os._exit(0)
 
-app = FastAPI(lifespan=lifespan)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+app = FastAPI()
 
 # Allow CORS for local development
 app.add_middleware(
