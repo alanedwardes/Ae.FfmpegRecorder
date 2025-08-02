@@ -69,15 +69,15 @@ def get_audio_devices():
             if not line.startswith(' ') and not line.startswith('\t'):
                 # This is a device name
                 current_device = line
-                # Add the device if it's not null
-                if current_device and current_device != 'null':
+                # Only add hw: devices (main hardware devices)
+                if current_device and current_device != 'null' and current_device.startswith('hw:'):
                     devices.append({
                         "value": current_device,
                         "label": current_device
                     })
             elif line.startswith(' ') or line.startswith('\t'):
                 # This is a description line
-                if current_device and current_device != 'null':
+                if current_device and current_device != 'null' and current_device.startswith('hw:'):
                     # Update the label with the description
                     for device in devices:
                         if device["value"] == current_device:
@@ -108,8 +108,8 @@ def get_video_devices():
                 continue
                 
             if not line.startswith('\t'):
-                # This is a device name
-                current_device = line
+                # This is a device name (remove trailing colon)
+                current_device = line.rstrip(':')
             elif line.startswith('\t'):
                 # This is a device path
                 if current_device and line.startswith('/dev/video'):
