@@ -22,6 +22,13 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     shutdown_event.set()
+    # Close all WebSocket connections
+    for ws in list(ws_connections):
+        try:
+            await ws.close()
+        except:
+            pass
+    ws_connections.clear()
     if ffmpeg_process and ffmpeg_process.poll() is None:
         ffmpeg_process.terminate()
 
@@ -276,7 +283,7 @@ async def websocket_logs(ws: WebSocket):
         for log_entry in list(ffmpeg_log_lines)[-200:]:
             await ws.send_json(log_entry)
         
-        while True:
+        while not shutdown_event.is_set():
             try:
                 log_entry = ffmpeg_log_queue.get_nowait()
                 await ws.send_json(log_entry)
