@@ -3,6 +3,7 @@ import signal
 import subprocess
 import threading
 import time
+import re
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -48,17 +49,76 @@ FORMATS = [
 ]
 DEFAULT_FORMAT = "mp4"
 
+def get_audio_devices():
+    try:
+        result = subprocess.run(['arecord', '-L'], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return []
+        
+        devices = []
+        current_device = None
+        
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            if not line.startswith(' ') and not line.startswith('\t'):
+                current_device = line
+            elif line.startswith(' ') or line.startswith('\t'):
+                if current_device and current_device != 'null':
+                    devices.append({
+                        "value": current_device,
+                        "label": f"{current_device} - {line.strip()}"
+                    })
+        
+        return devices
+    except Exception as e:
+        return []
+
+def get_video_devices():
+    try:
+        result = subprocess.run(['v4l2-ctl', '--list-devices'], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return []
+        
+        devices = []
+        current_device = None
+        
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            if not line.startswith('\t'):
+                current_device = line
+            elif line.startswith('\t') and line.endswith(':'):
+                continue
+            elif line.startswith('\t'):
+                if current_device and line.startswith('/dev/video'):
+                    devices.append({
+                        "value": line.strip(),
+                        "label": f"{current_device} - {line.strip()}"
+                    })
+        
+        return devices
+    except Exception as e:
+        return []
+
+AUDIO_DEVICES = get_audio_devices()
+VIDEO_DEVICES = get_video_devices()
+
 FFMPEG_CMD_TEMPLATES = {
     "mp4": (
         "/usr/bin/ffmpeg -y "
-        "-f alsa -i hw:CARD=Generic_1,DEV=0 "
-        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
+        "-f alsa -i {audio_device} "
+        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i {video_device} "
         "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
     ),
     "avi": (
         "/usr/bin/ffmpeg -y "
-        "-f alsa -i hw:CARD=Generic_1,DEV=0 "
-        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i /dev/video0 "
+        "-f alsa -i {audio_device} "
+        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i {video_device} "
         "-b:v {bitrate} -b:a 192k -c:v mpeg4 -vtag DX50 -c:a libmp3lame {output_file}"
     ),
 }
@@ -109,9 +169,9 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
-def build_ffmpeg_cmd(bitrate, output_file, resolution, format=DEFAULT_FORMAT):
+def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT):
     template = FFMPEG_CMD_TEMPLATES[format]
-    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution).split()
+    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution, audio_device=audio_device, video_device=video_device).split()
 
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
@@ -130,12 +190,20 @@ def get_resolutions():
 def get_formats():
     return {"formats": FORMATS, "default": DEFAULT_FORMAT}
 
+@app.get("/audio-devices")
+def get_audio_devices_endpoint():
+    return {"audio_devices": AUDIO_DEVICES}
+
+@app.get("/video-devices")
+def get_video_devices_endpoint():
+    return {"video_devices": VIDEO_DEVICES}
+
 @app.get("/status")
 def status():
     return {"recording": is_recording()}
 
 @app.post("/start")
-def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, format: str = DEFAULT_FORMAT):
+def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT):
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
@@ -145,8 +213,12 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
         return JSONResponse({"error": "Invalid resolution"}, status_code=400)
     if format not in [f["value"] for f in FORMATS]:
         return JSONResponse({"error": "Invalid format"}, status_code=400)
+    if not audio_device or audio_device not in [d["value"] for d in AUDIO_DEVICES]:
+        return JSONResponse({"error": "Valid audio device is required"}, status_code=400)
+    if not video_device or video_device not in [d["value"] for d in VIDEO_DEVICES]:
+        return JSONResponse({"error": "Valid video device is required"}, status_code=400)
     output_file = get_output_filename(format)
-    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, format)
+    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
@@ -259,6 +331,10 @@ HTML_PAGE = """
         <select id="bitrate"></select>
         <label for="resolution">Resolution:</label>
         <select id="resolution"></select>
+        <label for="audio_device">Audio Device:</label>
+        <select id="audio_device"></select>
+        <label for="video_device">Video Device:</label>
+        <select id="video_device"></select>
         <label for="format">Format:</label>
         <select id="format"></select>
         <button id="startBtn">Start Recording</button>
@@ -307,6 +383,28 @@ HTML_PAGE = """
                 });
             });
         }
+        function fetchAudioDevices() {
+            fetch('/audio-devices').then(r => r.json()).then(d => {
+                let sel = document.getElementById('audio_device');
+                sel.innerHTML = '<option value="">Select Audio Device</option>';
+                d.audio_devices.forEach(d => {
+                    let o = document.createElement('option');
+                    o.value = d.value; o.text = d.label;
+                    sel.appendChild(o);
+                });
+            });
+        }
+        function fetchVideoDevices() {
+            fetch('/video-devices').then(r => r.json()).then(d => {
+                let sel = document.getElementById('video_device');
+                sel.innerHTML = '<option value="">Select Video Device</option>';
+                d.video_devices.forEach(d => {
+                    let o = document.createElement('option');
+                    o.value = d.value; o.text = d.label;
+                    sel.appendChild(o);
+                });
+            });
+        }
         function updateStatus() {
             fetch('/status').then(r => r.json()).then(d => {
                 document.getElementById('startBtn').disabled = d.recording;
@@ -317,8 +415,10 @@ HTML_PAGE = """
         function startRecording() {
             let bitrate = document.getElementById('bitrate').value;
             let resolution = document.getElementById('resolution').value;
+            let audio_device = document.getElementById('audio_device').value;
+            let video_device = document.getElementById('video_device').value;
             let format = document.getElementById('format').value;
-            let params = new URLSearchParams({bitrate, resolution, format});
+            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format});
             fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
@@ -367,6 +467,8 @@ HTML_PAGE = """
         document.getElementById('stopBtn').onclick = stopRecording;
         fetchBitrates();
         fetchResolutions();
+        fetchAudioDevices();
+        fetchVideoDevices();
         fetchFormats();
         updateStatus();
         loadFiles();
