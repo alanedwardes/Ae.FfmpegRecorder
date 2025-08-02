@@ -277,8 +277,13 @@ async def websocket_logs(ws: WebSocket):
             except queue.Empty:
                 pass
             if not sent:
-                await asyncio.sleep(0.2)
+                try:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    break
     except WebSocketDisconnect:
+        pass
+    except asyncio.CancelledError:
         pass
     finally:
         ws_connections.discard(ws)
@@ -318,19 +323,25 @@ def delete_file(filename: str):
 async def shutdown_event_handler():
     global ffmpeg_process, shutdown_event
     shutdown_event.set()
+    
     # Close all websocket connections
     for ws in list(ws_connections):
         try:
             await ws.close()
         except Exception:
             pass
+    
+    # Terminate ffmpeg process if running
     if ffmpeg_process and ffmpeg_process.poll() is None:
         try:
             ffmpeg_process.terminate()
             ffmpeg_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            ffmpeg_process.kill()
-        except:
+            try:
+                ffmpeg_process.kill()
+            except Exception:
+                pass
+        except Exception:
             pass
 
 # --- Simple HTML/JS Frontend ---
