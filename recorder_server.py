@@ -15,7 +15,17 @@ import queue
 import asyncio
 from collections import deque
 
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Shutdown
+    shutdown_event.set()
+    if ffmpeg_process and ffmpeg_process.poll() is None:
+        ffmpeg_process.terminate()
+
+app = FastAPI(lifespan=lifespan)
 
 # Allow CORS for local development
 app.add_middleware(
@@ -263,36 +273,19 @@ async def websocket_logs(ws: WebSocket):
     await ws.accept()
     ws_connections.add(ws)
     try:
-        # Send last 200 lines on connect
         for log_entry in list(ffmpeg_log_lines)[-200:]:
             await ws.send_json(log_entry)
-        while not shutdown_event.is_set():
-            sent = False
+        
+        while True:
             try:
-                # Drain all available log lines
-                while True:
-                    log_entry = ffmpeg_log_queue.get_nowait()
-                    await ws.send_json(log_entry)
-                    sent = True
+                log_entry = ffmpeg_log_queue.get_nowait()
+                await ws.send_json(log_entry)
             except queue.Empty:
-                pass
-            if not sent:
-                try:
-                    await asyncio.sleep(0.2)
-                except asyncio.CancelledError:
-                    break
-    except WebSocketDisconnect:
-        pass
-    except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
         ws_connections.discard(ws)
-        # Ensure websocket is closed on shutdown
-        if shutdown_event.is_set():
-            try:
-                await ws.close()
-            except Exception:
-                pass
 
 @app.get("/files")
 def list_files():
@@ -318,31 +311,7 @@ def delete_file(filename: str):
     os.remove(file_path)
     return {"deleted": True}
 
-# --- Shutdown Handler ---
-@app.on_event("shutdown")
-async def shutdown_event_handler():
-    global ffmpeg_process, shutdown_event
-    shutdown_event.set()
-    
-    # Close all websocket connections
-    for ws in list(ws_connections):
-        try:
-            await ws.close()
-        except Exception:
-            pass
-    
-    # Terminate ffmpeg process if running
-    if ffmpeg_process and ffmpeg_process.poll() is None:
-        try:
-            ffmpeg_process.terminate()
-            ffmpeg_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                ffmpeg_process.kill()
-            except Exception:
-                pass
-        except Exception:
-            pass
+
 
 # --- Simple HTML/JS Frontend ---
 HTML_PAGE = """
