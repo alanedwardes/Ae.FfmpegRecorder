@@ -136,6 +136,43 @@ def get_video_devices():
         print(f"Error getting video devices: {e}")
         return []
 
+def get_usb_devices():
+    try:
+        result = subprocess.run(['usbreset'], capture_output=True, text=True, timeout=10)
+        print(f"USB command return code: {result.returncode}")
+        print(f"USB command stdout: {result.stdout}")
+        print(f"USB command stderr: {result.stderr}")
+        if result.returncode != 0:
+            return []
+        
+        devices = []
+        in_devices_section = False
+        
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            if line == "Devices:":
+                in_devices_section = True
+                continue
+                
+            if in_devices_section and line.startswith("Number"):
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == "Number" and parts[2] == "ID":
+                    device_id = parts[3]
+                    device_name = " ".join(parts[4:]) if len(parts) > 4 else "USB Device"
+                    devices.append({
+                        "value": device_id,
+                        "label": f"{device_name} ({device_id})"
+                    })
+        
+        print(f"Found USB devices: {devices}")
+        return devices
+    except Exception as e:
+        print(f"Error getting USB devices: {e}")
+        return []
+
 FFMPEG_CMD_TEMPLATES = {
     "mp4": (
         "/usr/bin/ffmpeg -y "
@@ -231,6 +268,27 @@ def get_video_devices_endpoint():
     if devices:
         devices[0]["default"] = True
     return {"video_devices": devices}
+
+@app.get("/usb-devices")
+def get_usb_devices_endpoint():
+    devices = get_usb_devices()
+    return {"usb_devices": devices}
+
+@app.post("/reset-usb/{device_id}")
+def reset_usb_device(device_id: str):
+    try:
+        result = subprocess.run(['usbreset', device_id], capture_output=True, text=True, timeout=10)
+        print(f"USB reset command return code: {result.returncode}")
+        print(f"USB reset command stdout: {result.stdout}")
+        print(f"USB reset command stderr: {result.stderr}")
+        
+        if result.returncode == 0:
+            return {"success": True, "message": f"USB device {device_id} reset successfully"}
+        else:
+            return JSONResponse({"error": f"Failed to reset USB device {device_id}: {result.stderr}"}, status_code=400)
+    except Exception as e:
+        print(f"Error resetting USB device {device_id}: {e}")
+        return JSONResponse({"error": f"Error resetting USB device {device_id}: {str(e)}"}, status_code=500)
 
 @app.get("/status")
 def status():
@@ -344,6 +402,11 @@ HTML_PAGE = """
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
     </div>
+    <div>
+        <label for="usb_device">USB Device:</label>
+        <select id="usb_device"></select>
+        <button id="resetUsbBtn">Reset USB Device</button>
+    </div>
     <div id="status"></div>
     <h2>Logs</h2>
     <div id="logs"></div>
@@ -411,6 +474,29 @@ HTML_PAGE = """
                 });
             });
         }
+        function fetchUsbDevices() {
+            fetch('/usb-devices').then(r => r.json()).then(d => {
+                let sel = document.getElementById('usb_device');
+                sel.innerHTML = '';
+                d.usb_devices.forEach(d => {
+                    let o = document.createElement('option');
+                    o.value = d.value; o.text = d.label;
+                    sel.appendChild(o);
+                });
+            });
+        }
+        function resetUsbDevice() {
+            let usb_device = document.getElementById('usb_device').value;
+            if (!usb_device) {
+                alert('Please select a USB device to reset');
+                return;
+            }
+            fetch('/reset-usb/' + encodeURIComponent(usb_device), {method: 'POST'})
+                .then(r => r.json()).then(d => {
+                    if (d.error) alert(d.error);
+                    else alert(d.message || 'USB device reset successfully');
+                });
+        }
         function updateStatus() {
             fetch('/status').then(r => r.json()).then(d => {
                 document.getElementById('startBtn').disabled = d.recording;
@@ -471,10 +557,12 @@ HTML_PAGE = """
         }
         document.getElementById('startBtn').onclick = startRecording;
         document.getElementById('stopBtn').onclick = stopRecording;
+        document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
         fetchBitrates();
         fetchResolutions();
         fetchAudioDevices();
         fetchVideoDevices();
+        fetchUsbDevices();
         fetchFormats();
         updateStatus();
         loadFiles();
