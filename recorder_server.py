@@ -142,8 +142,6 @@ def get_usb_devices():
         print(f"USB command return code: {result.returncode}")
         print(f"USB command stdout: {result.stdout}")
         print(f"USB command stderr: {result.stderr}")
-        if result.returncode != 0:
-            return []
         
         devices = []
         in_devices_section = False
@@ -159,13 +157,22 @@ def get_usb_devices():
                 
             if in_devices_section and line.startswith("Number"):
                 parts = line.split()
-                if len(parts) >= 4 and parts[0] == "Number" and parts[2] == "ID":
-                    device_id = parts[3]
-                    device_name = " ".join(parts[4:]) if len(parts) > 4 else "USB Device"
-                    devices.append({
-                        "value": device_id,
-                        "label": f"{device_name} ({device_id})"
-                    })
+                if len(parts) >= 4:
+                    device_id = None
+                    device_name = "USB Device"
+                    
+                    for i, part in enumerate(parts):
+                        if part == "ID" and i + 1 < len(parts):
+                            device_id = parts[i + 1]
+                            if i + 2 < len(parts):
+                                device_name = " ".join(parts[i + 2:])
+                            break
+                    
+                    if device_id:
+                        devices.append({
+                            "value": device_id,
+                            "label": f"{device_name} ({device_id})"
+                        })
         
         print(f"Found USB devices: {devices}")
         return devices
