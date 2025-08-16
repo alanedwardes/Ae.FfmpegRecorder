@@ -395,7 +395,8 @@ HTML_PAGE = """
 </head>
 <body>
     <h1>FFMPEG Recorder</h1>
-    <div>
+    <div style="margin-bottom: 2em; padding: 1em; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9;">
+        <h3 style="margin-top: 0; color: #333;">Recording Controls</h3>
         <label for="bitrate">Bitrate:</label>
         <select id="bitrate"></select>
         <label for="resolution">Resolution:</label>
@@ -409,7 +410,8 @@ HTML_PAGE = """
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
     </div>
-    <div>
+    <div style="margin-bottom: 2em; padding: 1em; border: 1px solid #ddd; border-radius: 5px; background-color: #f0f0f0;">
+        <h3 style="margin-top: 0; color: #666;">USB Device Management</h3>
         <label for="usb_device">USB Device:</label>
         <select id="usb_device"></select>
         <button id="resetUsbBtn">Reset USB Device</button>
