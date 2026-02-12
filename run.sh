@@ -1,1 +1,2 @@
+source .venv/bin/activate
 python -m uvicorn recorder_server:app --host 0.0.0.0 --port 3000
