@@ -59,6 +59,7 @@ FORMATS = [
     {"value": "avi", "label": "AVI (DivX)"},
 ]
 DEFAULT_FORMAT = "mp4"
+DEFAULT_INPUT_FORMAT = "mjpeg"
 
 def get_audio_devices():
     try:
@@ -184,13 +185,13 @@ FFMPEG_CMD_TEMPLATES = {
     "mp4": (
         "/usr/bin/ffmpeg -y "
         "-f alsa -thread_queue_size 4096 -i {audio_device} "
-        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i {video_device} "
+        "-f v4l2 -input_format {input_format} -framerate 24 -video_size {resolution} -i {video_device} "
         "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
     ),
     "avi": (
         "/usr/bin/ffmpeg -y "
         "-f alsa -thread_queue_size 4096 -i {audio_device} "
-        "-f v4l2 -input_format mjpeg -framerate 24 -video_size {resolution} -i {video_device} "
+        "-f v4l2 -input_format {input_format} -framerate 24 -video_size {resolution} -i {video_device} "
         "-b:v {bitrate} -b:a 192k -c:v mpeg4 -vtag DX50 -c:a libmp3lame {output_file}"
     ),
 }
@@ -241,9 +242,9 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
-def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT):
+def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT, input_format=DEFAULT_INPUT_FORMAT):
     template = FFMPEG_CMD_TEMPLATES[format]
-    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution, audio_device=audio_device, video_device=video_device).split()
+    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution, audio_device=audio_device, video_device=video_device, input_format=input_format).split()
 
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
@@ -276,6 +277,43 @@ def get_video_devices_endpoint():
         devices[0]["default"] = True
     return {"video_devices": devices}
 
+def get_video_formats(device_path):
+    try:
+        # Ask ffmpeg to list formats directly for the device. It writes this to stderr and exits with an error code.
+        result = subprocess.run(['/usr/bin/ffmpeg', '-f', 'v4l2', '-list_formats', 'all', '-i', device_path], capture_output=True, text=True, timeout=10)
+        output = result.stderr
+        
+        formats_set = set()
+        formats = []
+        
+        # Example output lines:
+        # [video4linux2,v4l2 @ ...] Raw       :     yuyv422 :           YUYV 4:2:2 : 640x480 ...
+        # [video4linux2,v4l2 @ ...] Compressed:       mjpeg :          Motion-JPEG : 640x480 ...
+        for line in output.split('\n'):
+            match = re.search(r"(?:Raw|Compressed)\s*:\s*([^:]+)\s*:\s*([^:]+)", line)
+            if match:
+                value = match.group(1).strip()
+                description = match.group(2).strip()
+                
+                if value and value not in formats_set:
+                    formats_set.add(value)
+                    formats.append({"value": value, "label": f"{value.upper()} ({description})"})
+                    
+        print(f"Found video formats using ffmpeg for {device_path}: {formats}")
+        return formats
+    except Exception as e:
+        print(f"Error getting video formats for {device_path}: {e}")
+        return []
+
+@app.get("/video-formats")
+def get_video_formats_endpoint(device: str):
+    if not device:
+        return {"video_formats": []}
+    formats = get_video_formats(device)
+    if formats:
+        formats[0]["default"] = True
+    return {"video_formats": formats}
+
 @app.get("/usb-devices")
 def get_usb_devices_endpoint():
     devices = get_usb_devices()
@@ -302,7 +340,7 @@ def status():
     return {"recording": is_recording()}
 
 @app.post("/start")
-def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT):
+def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT, input_format: str = DEFAULT_INPUT_FORMAT):
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
@@ -317,7 +355,7 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
     if not video_device or video_device not in [d["value"] for d in get_video_devices()]:
         return JSONResponse({"error": "Valid video device is required"}, status_code=400)
     output_file = get_output_filename(format)
-    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format)
+    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format, input_format)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
@@ -403,8 +441,10 @@ HTML_PAGE = """
         <label for="audio_device">Audio Device:</label>
         <select id="audio_device"></select>
         <label for="video_device">Video Device:</label>
-        <select id="video_device"></select>
-        <label for="format">Format:</label>
+        <select id="video_device" onchange="fetchVideoFormats()"></select>
+        <label for="input_format">Input Format:</label>
+        <select id="input_format"></select>
+        <label for="format">Output Format:</label>
         <select id="format"></select>
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
@@ -479,6 +519,30 @@ HTML_PAGE = """
                     if (d.default) o.selected = true; // Select the default device
                     sel.appendChild(o);
                 });
+                fetchVideoFormats();
+            });
+        }
+        function fetchVideoFormats() {
+            let device = document.getElementById('video_device').value;
+            if (!device) return;
+            fetch('/video-formats?device=' + encodeURIComponent(device)).then(r => r.json()).then(d => {
+                let sel = document.getElementById('input_format');
+                sel.innerHTML = '';
+                if (d.video_formats && d.video_formats.length > 0) {
+                    d.video_formats.forEach(f => {
+                        let o = document.createElement('option');
+                        o.value = f.value; o.text = f.label;
+                        if (f.default) o.selected = true;
+                        sel.appendChild(o);
+                    });
+                } else {
+                    let o = document.createElement('option');
+                    o.value = "mjpeg"; o.text = "MJPEG (Fallback)";
+                    sel.appendChild(o);
+                }
+            }).catch(e => {
+                let sel = document.getElementById('input_format');
+                sel.innerHTML = '<option value="mjpeg">MJPEG (Fallback)</option>';
             });
         }
         function fetchUsbDevices() {
@@ -517,7 +581,8 @@ HTML_PAGE = """
             let audio_device = document.getElementById('audio_device').value;
             let video_device = document.getElementById('video_device').value;
             let format = document.getElementById('format').value;
-            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format});
+            let input_format = document.getElementById('input_format').value;
+            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format});
             fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
