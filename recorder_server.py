@@ -425,36 +425,38 @@ HTML_PAGE = """
     <title>FFMPEG Recorder</title>
     <style>
         body { font-family: sans-serif; margin: 2em; }
+        .controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1em; margin-bottom: 1em; }
+        .field { display: flex; flex-direction: column; gap: 0.25em; }
+        .field label { font-size: 0.85em; font-weight: bold; }
+        .field select { width: 100%; }
+        .usb-row { display: flex; align-items: center; gap: 1em; margin-bottom: 1em; }
         #logs { background: #111; color: #0f0; padding: 1em; height: 300px; overflow-y: scroll; font-family: monospace; }
-        #files { margin-top: 2em; }
-        .file-row { display: flex; align-items: center; gap: 1em; }
-        button { margin-left: 1em; }
+        .file-row { display: flex; align-items: center; gap: 1em; margin-bottom: 0.25em; }
     </style>
 </head>
 <body>
     <h1>FFMPEG Recorder</h1>
-    <div>
-        <label for="bitrate">Bitrate:</label>
-        <select id="bitrate"></select>
-        <label for="resolution">Resolution:</label>
-        <select id="resolution"></select>
-        <label for="audio_device">Audio Device:</label>
-        <select id="audio_device"></select>
-        <label for="video_device">Video Device:</label>
-        <select id="video_device" onchange="fetchVideoFormats()"></select>
-        <label for="input_format">Input Format:</label>
-        <select id="input_format"></select>
-        <label for="format">Output Format:</label>
-        <select id="format"></select>
-        <button id="startBtn">Start Recording</button>
-        <button id="stopBtn" disabled>Stop Recording</button>
+
+    <div class="controls">
+        <div class="field"><label for="video_device">Video Device</label><select id="video_device" onchange="fetchVideoFormats()"></select></div>
+        <div class="field"><label for="input_format">Input Format</label><select id="input_format"></select></div>
+        <div class="field"><label for="resolution">Resolution</label><select id="resolution"></select></div>
+        <div class="field"><label for="audio_device">Audio Device</label><select id="audio_device"></select></div>
+        <div class="field"><label for="bitrate">Bitrate</label><select id="bitrate"></select></div>
+        <div class="field"><label for="format">Output Format</label><select id="format"></select></div>
     </div>
     <div>
+        <button id="startBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+        <span id="status"></span>
+    </div>
+
+    <div class="usb-row" style="margin-top: 1.5em;">
         <label for="usb_device">USB Device:</label>
         <select id="usb_device"></select>
         <button id="resetUsbBtn">Reset USB Device</button>
     </div>
-    <div id="status"></div>
+
     <h2>Logs</h2>
     <div id="logs"></div>
     <h2>Recorded Files</h2>
