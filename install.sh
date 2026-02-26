@@ -34,6 +34,7 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl start "$SERVICE_NAME"
 
 echo "Service installed. Usage:"
 echo "  sudo systemctl start $SERVICE_NAME"
