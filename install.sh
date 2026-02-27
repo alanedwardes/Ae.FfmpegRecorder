@@ -21,6 +21,7 @@ After=network.target
 
 [Service]
 Type=simple
+User=$USER
 WorkingDirectory=$WORKING_DIR
 ExecStart=$PYTHON -m uvicorn recorder_server:app --host 0.0.0.0 --port $PORT
 Restart=on-failure
