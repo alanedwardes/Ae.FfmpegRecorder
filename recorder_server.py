@@ -60,6 +60,8 @@ FORMATS = [
 ]
 DEFAULT_FORMAT = "mp4"
 DEFAULT_INPUT_FORMAT = "mjpeg"
+PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
+DEFAULT_PRESET = "medium"
 
 def get_audio_devices():
     try:
@@ -186,7 +188,7 @@ FFMPEG_CMD_TEMPLATES = {
         "/usr/bin/ffmpeg -y "
         "-f alsa -thread_queue_size 4096 -i {audio_device} "
         "-f v4l2 -input_format {input_format} -framerate 24 -video_size {resolution} -i {video_device} "
-        "-b:v {bitrate} -b:a 192k -c:v libx264 -c:a aac -pix_fmt yuv420p {output_file}"
+        "-b:v {bitrate} -b:a 192k -c:v libx264 -preset {preset} -c:a aac -pix_fmt yuv420p {output_file}"
     ),
     "avi": (
         "/usr/bin/ffmpeg -y "
@@ -242,9 +244,9 @@ def ffmpeg_worker(cmd):
     finally:
         ffmpeg_process = None
 
-def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT, input_format=DEFAULT_INPUT_FORMAT):
+def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT, input_format=DEFAULT_INPUT_FORMAT, preset=DEFAULT_PRESET):
     template = FFMPEG_CMD_TEMPLATES[format]
-    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution, audio_device=audio_device, video_device=video_device, input_format=input_format).split()
+    return template.format(bitrate=bitrate, output_file=output_file, resolution=resolution, audio_device=audio_device, video_device=video_device, input_format=input_format, preset=preset).split()
 
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
@@ -262,6 +264,10 @@ def get_resolutions():
 @app.get("/formats")
 def get_formats():
     return {"formats": FORMATS, "default": DEFAULT_FORMAT}
+
+@app.get("/presets")
+def get_presets():
+    return {"presets": PRESETS, "default": DEFAULT_PRESET}
 
 @app.get("/audio-devices")
 def get_audio_devices_endpoint():
@@ -340,7 +346,7 @@ def status():
     return {"recording": is_recording()}
 
 @app.post("/start")
-def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT, input_format: str = DEFAULT_INPUT_FORMAT):
+def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT, input_format: str = DEFAULT_INPUT_FORMAT, preset: str = DEFAULT_PRESET):
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
@@ -350,12 +356,14 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
         return JSONResponse({"error": "Invalid resolution"}, status_code=400)
     if format not in [f["value"] for f in FORMATS]:
         return JSONResponse({"error": "Invalid format"}, status_code=400)
+    if preset not in PRESETS:
+        return JSONResponse({"error": "Invalid preset"}, status_code=400)
     if not audio_device or audio_device not in [d["value"] for d in get_audio_devices()]:
         return JSONResponse({"error": "Valid audio device is required"}, status_code=400)
     if not video_device or video_device not in [d["value"] for d in get_video_devices()]:
         return JSONResponse({"error": "Valid video device is required"}, status_code=400)
     output_file = get_output_filename(format)
-    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format, input_format)
+    cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format, input_format, preset)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
     return {"started": True, "output": os.path.basename(output_file)}
@@ -444,6 +452,7 @@ HTML_PAGE = """
         <div class="field"><label for="audio_device">Audio Device</label><select id="audio_device"></select></div>
         <div class="field"><label for="bitrate">Bitrate</label><select id="bitrate"></select></div>
         <div class="field"><label for="format">Output Format</label><select id="format"></select></div>
+        <div class="field"><label for="preset">Preset (H.264)</label><select id="preset"></select></div>
     </div>
     <div>
         <button id="startBtn">Start Recording</button>
@@ -495,6 +504,18 @@ HTML_PAGE = """
                     let o = document.createElement('option');
                     o.value = f.value; o.text = f.label;
                     if (f.value === d.default) o.selected = true;
+                    sel.appendChild(o);
+                });
+            });
+        }
+        function fetchPresets() {
+            fetch('/presets').then(r => r.json()).then(d => {
+                let sel = document.getElementById('preset');
+                sel.innerHTML = '';
+                d.presets.forEach(p => {
+                    let o = document.createElement('option');
+                    o.value = p; o.text = p;
+                    if (p === d.default) o.selected = true;
                     sel.appendChild(o);
                 });
             });
@@ -584,7 +605,8 @@ HTML_PAGE = """
             let video_device = document.getElementById('video_device').value;
             let format = document.getElementById('format').value;
             let input_format = document.getElementById('input_format').value;
-            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format});
+            let preset = document.getElementById('preset').value;
+            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format, preset});
             fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
@@ -638,6 +660,7 @@ HTML_PAGE = """
         fetchVideoDevices();
         fetchUsbDevices();
         fetchFormats();
+        fetchPresets();
         updateStatus();
         loadFiles();
         connectLogs();
