@@ -859,16 +859,12 @@ HTML_PAGE = """
                     const row = document.createElement('div');
                     row.className = 'file-row';
                     const canPlay = BROWSER_PLAYABLE.has(fileExt(f.name));
-                    const playBtn = canPlay
-                        ? `<button onclick="openVideoModal('${f.name}')">&#9654; Play</button>`
-                        : '';
                     row.innerHTML =
                         `<img class="file-thumb" src="/thumbnails/${encodeURIComponent(f.name)}" alt="" loading="lazy"` +
                         (canPlay ? ` onclick="openVideoModal('${f.name}')" title="Play"` : '') + `>` +
                         `<span>${f.name}</span>` +
                         `<span>${(f.size/1024/1024).toFixed(2)} MB</span>` +
                         `<span>${new Date(f.mtime*1000).toLocaleString()}</span>` +
-                        playBtn +
                         `<a href="/files/${encodeURIComponent(f.name)}" download>Download</a>` +
                         `<button onclick="deleteFile('${f.name}')">Delete</button>`;
                     filesDiv.appendChild(row);
@@ -876,6 +872,7 @@ HTML_PAGE = """
             });
         }
         function deleteFile(name) {
+            if (!confirm(`Delete ${name}?`)) return;
             fetch('/files/' + encodeURIComponent(name), {method: 'DELETE'})
                 .then(r => r.json()).then(d => { if (d.deleted) loadFiles(); });
         }
