@@ -7,7 +7,7 @@ import time
 import re
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
@@ -22,6 +22,8 @@ def signal_handler(signum, frame):
     shutdown_event.set()
     if ffmpeg_process and ffmpeg_process.poll() is None:
         ffmpeg_process.terminate()
+    if preview_process and preview_process.poll() is None:
+        preview_process.terminate()
     os._exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -234,6 +236,25 @@ ffmpeg_log_queue = queue.Queue()
 ws_connections = set()
 shutdown_event = threading.Event()
 
+preview_process = None
+preview_thread = None
+preview_latest_frame = None
+preview_frame_lock = threading.Lock()
+
+_state = {"recording": False, "previewing": False}
+_state_version = 0
+_state_lock = threading.Lock()
+
+def get_state():
+    with _state_lock:
+        return dict(_state), _state_version
+
+def update_state(**kwargs):
+    global _state_version
+    with _state_lock:
+        _state.update(kwargs)
+        _state_version += 1
+
 # --- FFMPEG Process Management ---
 def get_output_filename(format=DEFAULT_FORMAT):
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -243,6 +264,10 @@ def get_output_filename(format=DEFAULT_FORMAT):
 def is_recording():
     global ffmpeg_process
     return ffmpeg_process is not None and ffmpeg_process.poll() is None
+
+def is_previewing():
+    global preview_process
+    return preview_process is not None and preview_process.poll() is None
 
 def ffmpeg_worker(cmd):
     global ffmpeg_process, ffmpeg_log_lines
@@ -270,6 +295,38 @@ def ffmpeg_worker(cmd):
         ffmpeg_process.wait()
     finally:
         ffmpeg_process = None
+        update_state(recording=False)
+
+def preview_worker(cmd):
+    global preview_process, preview_latest_frame
+    preview_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    buf = b''
+    try:
+        while True:
+            chunk = preview_process.stdout.read(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                start = buf.find(b'\xff\xd8\xff')
+                if start == -1:
+                    buf = b''
+                    break
+                end = buf.find(b'\xff\xd9', start + 3)
+                if end == -1:
+                    if start > 0:
+                        buf = buf[start:]
+                    break
+                with preview_frame_lock:
+                    preview_latest_frame = buf[start:end + 2]
+                buf = buf[end + 2:]
+    except Exception:
+        pass
+    finally:
+        preview_process = None
+        with preview_frame_lock:
+            preview_latest_frame = None
+        update_state(previewing=False)
 
 def build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format=DEFAULT_FORMAT, input_format=DEFAULT_INPUT_FORMAT, preset=DEFAULT_PRESET):
     template = FFMPEG_CMD_TEMPLATES[format]
@@ -368,10 +425,6 @@ def reset_usb_device(device_id: str):
         print(f"Error resetting USB device {device_id}: {e}")
         return JSONResponse({"error": f"Error resetting USB device {device_id}: {str(e)}"}, status_code=500)
 
-@app.get("/status")
-def status():
-    return {"recording": is_recording()}
-
 @app.get("/settings")
 def get_settings():
     return load_settings()
@@ -394,6 +447,8 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
     global ffmpeg_thread
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
+    if is_previewing():
+        return JSONResponse({"error": "Stop preview before recording"}, status_code=400)
     if bitrate not in BITRATES:
         return JSONResponse({"error": "Invalid bitrate"}, status_code=400)
     if resolution not in [r[0] for r in RESOLUTIONS]:
@@ -410,6 +465,7 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
     cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format, input_format, preset)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
+    update_state(recording=True)
     return {"started": True, "output": os.path.basename(output_file)}
 
 @app.post("/stop")
@@ -420,6 +476,50 @@ def stop_recording():
     ffmpeg_process.send_signal(signal.SIGINT)
     return {"stopping": True}
 
+@app.post("/preview/start")
+def start_preview(video_device: str = None, input_format: str = DEFAULT_INPUT_FORMAT):
+    global preview_thread
+    if is_recording():
+        return JSONResponse({"error": "Cannot preview while recording"}, status_code=400)
+    if is_previewing():
+        return JSONResponse({"error": "Already previewing"}, status_code=400)
+    if not video_device:
+        return JSONResponse({"error": "Video device required"}, status_code=400)
+    cmd = [
+        '/usr/bin/ffmpeg', '-f', 'v4l2', '-input_format', input_format,
+        '-i', video_device, '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '5', 'pipe:1'
+    ]
+    preview_thread = threading.Thread(target=preview_worker, args=(cmd,), daemon=True)
+    preview_thread.start()
+    update_state(previewing=True)
+    return {"started": True}
+
+@app.post("/preview/stop")
+def stop_preview():
+    global preview_process
+    if not is_previewing():
+        return JSONResponse({"error": "Not previewing"}, status_code=400)
+    preview_process.send_signal(signal.SIGINT)
+    return {"stopping": True}
+
+@app.get("/preview/stream")
+async def preview_stream():
+    if not is_previewing():
+        return JSONResponse({"error": "Not previewing"}, status_code=400)
+
+    async def generate():
+        try:
+            while is_previewing():
+                with preview_frame_lock:
+                    frame = preview_latest_frame
+                if frame:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                await asyncio.sleep(0.033)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+
 @app.get("/logs")
 def get_logs():
     return {"logs": list(ffmpeg_log_lines)[-200:]}  # last 200 lines
@@ -428,16 +528,26 @@ def get_logs():
 async def websocket_logs(ws: WebSocket):
     await ws.accept()
     ws_connections.add(ws)
+    last_state_version = -1
     try:
+        state, version = get_state()
+        await ws.send_json({"type": "state", **state})
+        last_state_version = version
+
         for log_entry in list(ffmpeg_log_lines)[-200:]:
             await ws.send_json(log_entry)
-        
+
         while not shutdown_event.is_set():
+            state, version = get_state()
+            if version != last_state_version:
+                await ws.send_json({"type": "state", **state})
+                last_state_version = version
+
             try:
                 log_entry = ffmpeg_log_queue.get_nowait()
                 await ws.send_json(log_entry)
             except queue.Empty:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
@@ -514,6 +624,9 @@ HTML_PAGE = """
         #videoModal { padding: 0; border: none; border-radius: 4px; background: #000; max-width: 90vw; }
         #videoModal::backdrop { background: rgba(0,0,0,0.75); }
         .modal-close { display: block; margin: 0.4em auto; background: #333; color: #fff; border: none; padding: 0.4em 1.5em; cursor: pointer; border-radius: 3px; }
+        #previewSection { margin-bottom: 1.5em; }
+        #previewImg { display: block; max-width: 100%; height: auto; background: #111; border-radius: 4px; }
+        #previewPlaceholder { display: flex; align-items: center; justify-content: center; width: 640px; max-width: 100%; height: 360px; background: #111; border-radius: 4px; color: #555; font-size: 0.9em; }
     </style>
 </head>
 <body>
@@ -535,8 +648,14 @@ HTML_PAGE = """
         </div>
     </details>
 
-    <div>
-        <button id="startBtn">Start Recording</button>
+    <div id="previewSection">
+        <img id="previewImg" style="display:none;">
+        <div id="previewPlaceholder">No preview</div>
+    </div>
+
+    <div style="margin-bottom: 1.5em;">
+        <button id="previewStopBtn" disabled>Stop Preview</button>
+        <button id="startBtn" disabled>Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
         <span id="status"></span>
     </div>
@@ -665,12 +784,26 @@ HTML_PAGE = """
                     else alert(d.message || 'USB device reset successfully');
                 });
         }
-        function updateStatus() {
-            fetch('/status').then(r => r.json()).then(d => {
-                document.getElementById('startBtn').disabled = d.recording;
-                document.getElementById('stopBtn').disabled = !d.recording;
-                document.getElementById('status').innerText = d.recording ? 'Recording...' : 'Idle';
-            });
+        function applyState(state) {
+            const previewing = !!state.previewing;
+            const recording = !!state.recording;
+            document.getElementById('previewStopBtn').disabled = !previewing;
+            document.getElementById('startBtn').disabled = previewing || recording;
+            document.getElementById('stopBtn').disabled = !recording;
+            document.getElementById('status').innerText = recording ? 'Recording...' : previewing ? 'Previewing...' : 'Idle';
+            const img = document.getElementById('previewImg');
+            const placeholder = document.getElementById('previewPlaceholder');
+            if (previewing) {
+                if (!img.src.endsWith('/preview/stream')) {
+                    img.src = '/preview/stream';
+                }
+                img.style.display = 'block';
+                placeholder.style.display = 'none';
+            } else {
+                img.style.display = 'none';
+                img.src = '';
+                placeholder.style.display = 'flex';
+            }
         }
         function startRecording() {
             const bitrate = document.getElementById('bitrate').value;
@@ -682,30 +815,41 @@ HTML_PAGE = """
             const preset = document.getElementById('preset').value;
             const params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format, preset});
             fetch('/start?' + params.toString(), {method: 'POST'})
-                .then(r => r.json()).then(d => {
-                    if (d.error) alert(d.error);
-                    updateStatus();
-                    connectLogs();
-                });
+                .then(r => r.json()).then(d => { if (d.error) alert(d.error); });
         }
         function stopRecording() {
             fetch('/stop', {method: 'POST'})
+                .then(r => r.json()).then(d => { if (d.error) alert(d.error); });
+        }
+        function startPreview() {
+            const video_device = document.getElementById('video_device').value;
+            const input_format = document.getElementById('input_format').value;
+            const params = new URLSearchParams({video_device, input_format});
+            fetch('/preview/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
-                    if (d.error) alert(d.error);
-                    updateStatus();
+                    if (d.error && d.error !== 'Already previewing') alert(d.error);
                 });
+        }
+        function stopPreview() {
+            fetch('/preview/stop', {method: 'POST'})
+                .then(r => r.json()).then(d => { if (d.error) alert(d.error); });
         }
         function connectLogs() {
             const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
             if (ws) ws.close();
             ws = new WebSocket(protocol + location.host + '/ws/logs');
             ws.onmessage = e => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'state') {
+                    applyState(msg);
+                    return;
+                }
                 const logs = document.getElementById('logs');
-                const logEntry = JSON.parse(e.data);
-                const escapedData = logEntry.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const escapedData = msg.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 logs.innerHTML += `<span style=\"color: #fff;\">${escapedData.replace(/\\n/g, '<br>')}</span><br>`;
                 logs.scrollTop = logs.scrollHeight;
             };
+            ws.onclose = () => setTimeout(connectLogs, 2000);
         }
         const BROWSER_PLAYABLE = new Set(['mp4', 'webm', 'ogg', 'mov']);
         function fileExt(name) { return name.split('.').pop().toLowerCase(); }
@@ -776,6 +920,7 @@ HTML_PAGE = """
         async function init() {
             document.getElementById('startBtn').onclick = startRecording;
             document.getElementById('stopBtn').onclick = stopRecording;
+            document.getElementById('previewStopBtn').onclick = stopPreview;
             document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
 
             try {
@@ -796,11 +941,13 @@ HTML_PAGE = """
             ]);
 
             wirePersistence();
-            updateStatus();
-            loadFiles();
             connectLogs();
-            setInterval(updateStatus, 2000);
+            loadFiles();
             setInterval(loadFiles, 5000);
+
+            // Auto-start preview once devices are loaded; ignore errors (e.g. no device connected)
+            const video_device = document.getElementById('video_device').value;
+            if (video_device) startPreview();
         }
         init();
     </script>
