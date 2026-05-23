@@ -589,10 +589,20 @@ def delete_file(filename: str):
     os.remove(file_path)
     return {"deleted": True}
 
+RECORDING_PLACEHOLDER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360">'
+    '<rect width="640" height="360" fill="#1a1a1a"/>'
+    '<circle cx="290" cy="160" r="14" fill="#cc0000"/>'
+    '<text x="314" y="167" font-family="sans-serif" font-size="22" fill="#ffffff">REC</text>'
+    '</svg>'
+)
+
 @app.get("/thumbnails/{filename}")
 def get_thumbnail(filename: str, request: Request):
     if filename == current_recording_file:
-        return JSONResponse({"error": "Recording in progress"}, status_code=404)
+        return Response(content=RECORDING_PLACEHOLDER_SVG, media_type="image/svg+xml", headers={
+            "Cache-Control": "no-store",
+        })
     file_path = os.path.join(RECORDINGS_DIR, filename)
     if not os.path.exists(file_path):
         return JSONResponse({"error": "File not found"}, status_code=404)
