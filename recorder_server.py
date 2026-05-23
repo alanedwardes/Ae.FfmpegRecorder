@@ -493,7 +493,8 @@ def start_preview(video_device: str = None, input_format: str = DEFAULT_INPUT_FO
         return JSONResponse({"error": "Video device required"}, status_code=400)
     cmd = [
         '/usr/bin/ffmpeg', '-f', 'v4l2', '-input_format', input_format,
-        '-i', video_device, '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '5', 'pipe:1'
+        '-i', video_device, '-vf', 'scale=640:360:force_original_aspect_ratio=decrease',
+        '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '5', 'pipe:1'
     ]
     preview_thread = threading.Thread(target=preview_worker, args=(cmd,), daemon=True)
     preview_thread.start()
