@@ -232,7 +232,9 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 ffmpeg_process = None
 ffmpeg_thread = None
 ffmpeg_log_lines = deque(maxlen=2000)
-ffmpeg_log_queue = queue.Queue()
+ffmpeg_log_queues = set()
+ffmpeg_log_queues_lock = threading.Lock()
+current_recording_file = None
 ws_connections = set()
 shutdown_event = threading.Event()
 
@@ -270,7 +272,7 @@ def is_previewing():
     return preview_process is not None and preview_process.poll() is None
 
 def ffmpeg_worker(cmd):
-    global ffmpeg_process, ffmpeg_log_lines
+    global ffmpeg_process, ffmpeg_log_lines, current_recording_file
     ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     ffmpeg_log_lines.clear()
     
@@ -281,7 +283,9 @@ def ffmpeg_worker(cmd):
                     break
                 log_entry = {"type": "stderr" if is_stderr else "stdout", "data": line}
                 ffmpeg_log_lines.append(log_entry)
-                ffmpeg_log_queue.put(log_entry)
+                with ffmpeg_log_queues_lock:
+                    for q in ffmpeg_log_queues:
+                        q.put(log_entry)
         except:
             pass
     
@@ -295,6 +299,7 @@ def ffmpeg_worker(cmd):
         ffmpeg_process.wait()
     finally:
         ffmpeg_process = None
+        current_recording_file = None
         update_state(recording=False)
 
 def preview_worker(cmd):
@@ -444,7 +449,7 @@ async def post_settings(request: Request):
 
 @app.post("/start")
 def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT, input_format: str = DEFAULT_INPUT_FORMAT, preset: str = DEFAULT_PRESET):
-    global ffmpeg_thread
+    global ffmpeg_thread, current_recording_file
     if is_recording():
         return JSONResponse({"error": "Already recording"}, status_code=400)
     if is_previewing():
@@ -462,6 +467,7 @@ def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RE
     if not video_device or video_device not in [d["value"] for d in get_video_devices()]:
         return JSONResponse({"error": "Valid video device is required"}, status_code=400)
     output_file = get_output_filename(format)
+    current_recording_file = os.path.basename(output_file)
     cmd = build_ffmpeg_cmd(bitrate, output_file, resolution, audio_device, video_device, format, input_format, preset)
     ffmpeg_thread = threading.Thread(target=ffmpeg_worker, args=(cmd,), daemon=True)
     ffmpeg_thread.start()
@@ -528,6 +534,9 @@ def get_logs():
 async def websocket_logs(ws: WebSocket):
     await ws.accept()
     ws_connections.add(ws)
+    my_queue = queue.Queue()
+    with ffmpeg_log_queues_lock:
+        ffmpeg_log_queues.add(my_queue)
     last_state_version = -1
     try:
         state, version = get_state()
@@ -544,7 +553,7 @@ async def websocket_logs(ws: WebSocket):
                 last_state_version = version
 
             try:
-                log_entry = ffmpeg_log_queue.get_nowait()
+                log_entry = my_queue.get_nowait()
                 await ws.send_json(log_entry)
             except queue.Empty:
                 await asyncio.sleep(0.1)
@@ -552,6 +561,8 @@ async def websocket_logs(ws: WebSocket):
         pass
     finally:
         ws_connections.discard(ws)
+        with ffmpeg_log_queues_lock:
+            ffmpeg_log_queues.discard(my_queue)
 
 @app.get("/files")
 def list_files():
@@ -579,6 +590,8 @@ def delete_file(filename: str):
 
 @app.get("/thumbnails/{filename}")
 def get_thumbnail(filename: str, request: Request):
+    if filename == current_recording_file:
+        return JSONResponse({"error": "Recording in progress"}, status_code=404)
     file_path = os.path.join(RECORDINGS_DIR, filename)
     if not os.path.exists(file_path):
         return JSONResponse({"error": "File not found"}, status_code=404)
@@ -588,7 +601,7 @@ def get_thumbnail(filename: str, request: Request):
         return Response(status_code=304)
     try:
         result = subprocess.run(
-            ['/usr/bin/ffmpeg', '-ss', '1', '-i', file_path, '-vframes', '1', '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1'],
+            ['/usr/bin/ffmpeg', '-ss', '1', '-i', file_path, '-vframes', '1', '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease', '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1'],
             capture_output=True, timeout=15
         )
         if result.returncode != 0 or not result.stdout:
