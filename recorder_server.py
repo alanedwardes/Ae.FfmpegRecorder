@@ -812,7 +812,7 @@ HTML_PAGE = """
             const section = document.getElementById('previewSection');
             const img = document.getElementById('previewImg');
             if (previewing) {
-                if (!img.src.endsWith('/preview/stream')) img.src = '/preview/stream';
+                img.src = '/preview/stream?t=' + Date.now();
                 section.style.display = 'block';
             } else {
                 section.style.display = 'none';
