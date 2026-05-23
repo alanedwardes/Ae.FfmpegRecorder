@@ -601,7 +601,7 @@ def get_thumbnail(filename: str, request: Request):
         return Response(status_code=304)
     try:
         result = subprocess.run(
-            ['/usr/bin/ffmpeg', '-ss', '1', '-i', file_path, '-vframes', '1', '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease', '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1'],
+            ['/usr/bin/ffmpeg', '-ss', '1', '-i', file_path, '-vframes', '1', '-vf', 'scale=640:360:force_original_aspect_ratio=decrease', '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1'],
             capture_output=True, timeout=15
         )
         if result.returncode != 0 or not result.stdout:
