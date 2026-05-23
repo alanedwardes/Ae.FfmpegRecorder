@@ -1,4 +1,5 @@
 import os
+import json
 import signal
 import subprocess
 import threading
@@ -38,6 +39,32 @@ app.add_middleware(
 )
 
 RECORDINGS_DIR = "recordings"
+SETTINGS_FILE = "settings.json"
+SETTINGS_KEYS = {"bitrate", "resolution", "format", "preset", "input_format", "video_device", "audio_device", "advanced_open"}
+settings_lock = threading.Lock()
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if k in SETTINGS_KEYS}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+def save_settings(updates):
+    with settings_lock:
+        current = load_settings()
+        for k, v in updates.items():
+            if k in SETTINGS_KEYS:
+                current[k] = v
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(current, f, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
+        return current
+
 BITRATES = ["500k", "1M", "2M", "4M"]
 RESOLUTIONS = [
     ("1920x1080", "1920x1080"),
@@ -345,6 +372,23 @@ def reset_usb_device(device_id: str):
 def status():
     return {"recording": is_recording()}
 
+@app.get("/settings")
+def get_settings():
+    return load_settings()
+
+@app.post("/settings")
+async def post_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Body must be a JSON object"}, status_code=400)
+    unknown = [k for k in body if k not in SETTINGS_KEYS]
+    if unknown:
+        return JSONResponse({"error": f"Unknown settings keys: {unknown}"}, status_code=400)
+    return save_settings(body)
+
 @app.post("/start")
 def start_recording(bitrate: str = DEFAULT_BITRATE, resolution: str = DEFAULT_RESOLUTION, audio_device: str = None, video_device: str = None, format: str = DEFAULT_FORMAT, input_format: str = DEFAULT_INPUT_FORMAT, preset: str = DEFAULT_PRESET):
     global ffmpeg_thread
@@ -438,6 +482,9 @@ HTML_PAGE = """
         .field label { font-size: 0.85em; font-weight: bold; }
         .field select { width: 100%; }
         .usb-row { display: flex; align-items: center; gap: 1em; margin-bottom: 1em; }
+        #advanced { margin: 0.5em 0 1em; }
+        #advanced > summary { cursor: pointer; font-weight: bold; padding: 0.4em 0; user-select: none; }
+        #advanced[open] > summary { margin-bottom: 0.5em; }
         #logs { background: #111; color: #0f0; padding: 1em; height: 300px; overflow-y: scroll; font-family: monospace; }
         .file-row { display: flex; align-items: center; gap: 1em; margin-bottom: 0.25em; }
     </style>
@@ -446,14 +493,21 @@ HTML_PAGE = """
     <h1>FFMPEG Recorder</h1>
 
     <div class="controls">
-        <div class="field"><label for="video_device">Video Device</label><select id="video_device" onchange="fetchVideoFormats()"></select></div>
-        <div class="field"><label for="input_format">Input Format</label><select id="input_format"></select></div>
-        <div class="field"><label for="resolution">Resolution</label><select id="resolution"></select></div>
-        <div class="field"><label for="audio_device">Audio Device</label><select id="audio_device"></select></div>
         <div class="field"><label for="bitrate">Bitrate</label><select id="bitrate"></select></div>
         <div class="field"><label for="format">Output Format</label><select id="format"></select></div>
-        <div class="field"><label for="preset">Preset (H.264)</label><select id="preset"></select></div>
+        <div class="field"><label for="resolution">Resolution</label><select id="resolution"></select></div>
     </div>
+
+    <details id="advanced">
+        <summary>Advanced</summary>
+        <div class="controls">
+            <div class="field"><label for="preset">Preset (H.264)</label><select id="preset"></select></div>
+            <div class="field"><label for="input_format">Input Format</label><select id="input_format"></select></div>
+            <div class="field"><label for="video_device">Video Device</label><select id="video_device"></select></div>
+            <div class="field"><label for="audio_device">Audio Device</label><select id="audio_device"></select></div>
+        </div>
+    </details>
+
     <div>
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
@@ -472,115 +526,104 @@ HTML_PAGE = """
     <div id="files"></div>
     <script>
         let ws;
-        function fetchBitrates() {
-            fetch('/bitrates').then(r => r.json()).then(d => {
-                let sel = document.getElementById('bitrate');
-                sel.innerHTML = '';
-                d.bitrates.forEach(b => {
-                    let o = document.createElement('option');
-                    o.value = b; o.text = b;
-                    if (b === d.default) o.selected = true;
-                    sel.appendChild(o);
-                });
+        let savedSettings = {};
+
+        function pickValue(items, getValue, saved, fallbackPredicate) {
+            if (saved !== undefined && saved !== null && items.some(i => getValue(i) === saved)) return saved;
+            const fb = items.find(fallbackPredicate);
+            if (fb) return getValue(fb);
+            return items.length ? getValue(items[0]) : null;
+        }
+        function populateSelect(sel, items, getValue, getLabel, selectedValue) {
+            sel.innerHTML = '';
+            items.forEach(i => {
+                const o = document.createElement('option');
+                o.value = getValue(i); o.text = getLabel(i);
+                if (getValue(i) === selectedValue) o.selected = true;
+                sel.appendChild(o);
             });
         }
-        function fetchResolutions() {
-            fetch('/resolutions').then(r => r.json()).then(d => {
-                let sel = document.getElementById('resolution');
-                sel.innerHTML = '';
-                d.resolutions.forEach(r => {
-                    let o = document.createElement('option');
-                    o.value = r.value; o.text = r.label;
-                    if (r.value === d.default) o.selected = true;
-                    sel.appendChild(o);
-                });
+        function saveSetting(key, value) {
+            fetch('/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({[key]: value})
+            }).catch(e => console.error('Failed to save setting', key, e));
+        }
+
+        function fetchBitrates(saved) {
+            return fetch('/bitrates').then(r => r.json()).then(d => {
+                const items = d.bitrates;
+                const selected = pickValue(items, x => x, saved, x => x === d.default);
+                const sel = document.getElementById('bitrate');
+                populateSelect(sel, items, x => x, x => x, selected);
             });
         }
-        function fetchFormats() {
-            fetch('/formats').then(r => r.json()).then(d => {
-                let sel = document.getElementById('format');
-                sel.innerHTML = '';
-                d.formats.forEach(f => {
-                    let o = document.createElement('option');
-                    o.value = f.value; o.text = f.label;
-                    if (f.value === d.default) o.selected = true;
-                    sel.appendChild(o);
-                });
+        function fetchResolutions(saved) {
+            return fetch('/resolutions').then(r => r.json()).then(d => {
+                const items = d.resolutions;
+                const selected = pickValue(items, x => x.value, saved, x => x.value === d.default);
+                populateSelect(document.getElementById('resolution'), items, x => x.value, x => x.label, selected);
             });
         }
-        function fetchPresets() {
-            fetch('/presets').then(r => r.json()).then(d => {
-                let sel = document.getElementById('preset');
-                sel.innerHTML = '';
-                d.presets.forEach(p => {
-                    let o = document.createElement('option');
-                    o.value = p; o.text = p;
-                    if (p === d.default) o.selected = true;
-                    sel.appendChild(o);
-                });
+        function fetchFormats(saved) {
+            return fetch('/formats').then(r => r.json()).then(d => {
+                const items = d.formats;
+                const selected = pickValue(items, x => x.value, saved, x => x.value === d.default);
+                populateSelect(document.getElementById('format'), items, x => x.value, x => x.label, selected);
             });
         }
-        function fetchAudioDevices() {
-            fetch('/audio-devices').then(r => r.json()).then(d => {
-                let sel = document.getElementById('audio_device');
-                sel.innerHTML = '';
-                d.audio_devices.forEach(d => {
-                    let o = document.createElement('option');
-                    o.value = d.value; o.text = d.label;
-                    if (d.default) o.selected = true; // Select the default device
-                    sel.appendChild(o);
-                });
+        function fetchPresets(saved) {
+            return fetch('/presets').then(r => r.json()).then(d => {
+                const items = d.presets;
+                const selected = pickValue(items, x => x, saved, x => x === d.default);
+                populateSelect(document.getElementById('preset'), items, x => x, x => x, selected);
             });
         }
-        function fetchVideoDevices() {
-            fetch('/video-devices').then(r => r.json()).then(d => {
-                let sel = document.getElementById('video_device');
-                sel.innerHTML = '';
-                d.video_devices.forEach(d => {
-                    let o = document.createElement('option');
-                    o.value = d.value; o.text = d.label;
-                    if (d.default) o.selected = true; // Select the default device
-                    sel.appendChild(o);
-                });
-                fetchVideoFormats();
+        function fetchAudioDevices(saved) {
+            return fetch('/audio-devices').then(r => r.json()).then(d => {
+                const items = d.audio_devices;
+                const selected = pickValue(items, x => x.value, saved, x => x.default);
+                populateSelect(document.getElementById('audio_device'), items, x => x.value, x => x.label, selected);
             });
         }
-        function fetchVideoFormats() {
-            let device = document.getElementById('video_device').value;
-            if (!device) return;
-            fetch('/video-formats?device=' + encodeURIComponent(device)).then(r => r.json()).then(d => {
-                let sel = document.getElementById('input_format');
-                sel.innerHTML = '';
+        function fetchVideoDevices(savedDevice, savedInputFormat) {
+            return fetch('/video-devices').then(r => r.json()).then(d => {
+                const items = d.video_devices;
+                const selected = pickValue(items, x => x.value, savedDevice, x => x.default);
+                populateSelect(document.getElementById('video_device'), items, x => x.value, x => x.label, selected);
+                return fetchVideoFormats(savedInputFormat);
+            });
+        }
+        function fetchVideoFormats(saved) {
+            const device = document.getElementById('video_device').value;
+            const sel = document.getElementById('input_format');
+            if (!device) { sel.innerHTML = ''; return Promise.resolve(); }
+            return fetch('/video-formats?device=' + encodeURIComponent(device)).then(r => r.json()).then(d => {
                 if (d.video_formats && d.video_formats.length > 0) {
-                    d.video_formats.forEach(f => {
-                        let o = document.createElement('option');
-                        o.value = f.value; o.text = f.label;
-                        if (f.default) o.selected = true;
-                        sel.appendChild(o);
-                    });
+                    const items = d.video_formats;
+                    const selected = pickValue(items, x => x.value, saved, x => x.default);
+                    populateSelect(sel, items, x => x.value, x => x.label, selected);
                 } else {
-                    let o = document.createElement('option');
-                    o.value = "mjpeg"; o.text = "MJPEG (Fallback)";
-                    sel.appendChild(o);
+                    sel.innerHTML = '<option value="mjpeg">MJPEG (Fallback)</option>';
                 }
-            }).catch(e => {
-                let sel = document.getElementById('input_format');
+            }).catch(() => {
                 sel.innerHTML = '<option value="mjpeg">MJPEG (Fallback)</option>';
             });
         }
         function fetchUsbDevices() {
-            fetch('/usb-devices').then(r => r.json()).then(d => {
-                let sel = document.getElementById('usb_device');
+            return fetch('/usb-devices').then(r => r.json()).then(d => {
+                const sel = document.getElementById('usb_device');
                 sel.innerHTML = '';
-                d.usb_devices.forEach(d => {
-                    let o = document.createElement('option');
-                    o.value = d.value; o.text = d.label;
+                d.usb_devices.forEach(dev => {
+                    const o = document.createElement('option');
+                    o.value = dev.value; o.text = dev.label;
                     sel.appendChild(o);
                 });
             });
         }
         function resetUsbDevice() {
-            let usb_device = document.getElementById('usb_device').value;
+            const usb_device = document.getElementById('usb_device').value;
             if (!usb_device) {
                 alert('Please select a USB device to reset');
                 return;
@@ -599,14 +642,14 @@ HTML_PAGE = """
             });
         }
         function startRecording() {
-            let bitrate = document.getElementById('bitrate').value;
-            let resolution = document.getElementById('resolution').value;
-            let audio_device = document.getElementById('audio_device').value;
-            let video_device = document.getElementById('video_device').value;
-            let format = document.getElementById('format').value;
-            let input_format = document.getElementById('input_format').value;
-            let preset = document.getElementById('preset').value;
-            let params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format, preset});
+            const bitrate = document.getElementById('bitrate').value;
+            const resolution = document.getElementById('resolution').value;
+            const audio_device = document.getElementById('audio_device').value;
+            const video_device = document.getElementById('video_device').value;
+            const format = document.getElementById('format').value;
+            const input_format = document.getElementById('input_format').value;
+            const preset = document.getElementById('preset').value;
+            const params = new URLSearchParams({bitrate, resolution, audio_device, video_device, format, input_format, preset});
             fetch('/start?' + params.toString(), {method: 'POST'})
                 .then(r => r.json()).then(d => {
                     if (d.error) alert(d.error);
@@ -622,23 +665,23 @@ HTML_PAGE = """
                 });
         }
         function connectLogs() {
-            let protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
             if (ws) ws.close();
             ws = new WebSocket(protocol + location.host + '/ws/logs');
             ws.onmessage = e => {
-                let logs = document.getElementById('logs');
-                let logEntry = JSON.parse(e.data);
-                let escapedData = logEntry.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const logs = document.getElementById('logs');
+                const logEntry = JSON.parse(e.data);
+                const escapedData = logEntry.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 logs.innerHTML += `<span style=\"color: #fff;\">${escapedData.replace(/\\n/g, '<br>')}</span><br>`;
                 logs.scrollTop = logs.scrollHeight;
             };
         }
         function loadFiles() {
             fetch('/files').then(r => r.json()).then(files => {
-                let filesDiv = document.getElementById('files');
+                const filesDiv = document.getElementById('files');
                 filesDiv.innerHTML = '';
                 files.forEach(f => {
-                    let row = document.createElement('div');
+                    const row = document.createElement('div');
                     row.className = 'file-row';
                     row.innerHTML = `<span>${f.name}</span> <span>${(f.size/1024/1024).toFixed(2)} MB</span> <span>${new Date(f.mtime*1000).toLocaleString()}</span>` +
                         `<a href="/files/${f.name}" download>Download</a>` +
@@ -651,22 +694,55 @@ HTML_PAGE = """
             fetch('/files/' + encodeURIComponent(name), {method: 'DELETE'})
                 .then(r => r.json()).then(d => { if (d.deleted) loadFiles(); });
         }
-        document.getElementById('startBtn').onclick = startRecording;
-        document.getElementById('stopBtn').onclick = stopRecording;
-        document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
-        fetchBitrates();
-        fetchResolutions();
-        fetchAudioDevices();
-        fetchVideoDevices();
-        fetchUsbDevices();
-        fetchFormats();
-        fetchPresets();
-        updateStatus();
-        loadFiles();
-        connectLogs();
-        setInterval(updateStatus, 2000);
-        setInterval(loadFiles, 5000);
+
+        function wirePersistence() {
+            const map = {
+                bitrate: 'bitrate',
+                format: 'format',
+                resolution: 'resolution',
+                preset: 'preset',
+                input_format: 'input_format',
+                video_device: 'video_device',
+                audio_device: 'audio_device',
+            };
+            Object.entries(map).forEach(([key, id]) => {
+                document.getElementById(id).addEventListener('change', e => saveSetting(key, e.target.value));
+            });
+            document.getElementById('video_device').addEventListener('change', () => fetchVideoFormats());
+            document.getElementById('advanced').addEventListener('toggle', e => saveSetting('advanced_open', e.target.open));
+        }
+
+        async function init() {
+            document.getElementById('startBtn').onclick = startRecording;
+            document.getElementById('stopBtn').onclick = stopRecording;
+            document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
+
+            try {
+                savedSettings = await fetch('/settings').then(r => r.json());
+            } catch (e) {
+                savedSettings = {};
+            }
+            document.getElementById('advanced').open = !!savedSettings.advanced_open;
+
+            await Promise.all([
+                fetchBitrates(savedSettings.bitrate),
+                fetchResolutions(savedSettings.resolution),
+                fetchFormats(savedSettings.format),
+                fetchPresets(savedSettings.preset),
+                fetchAudioDevices(savedSettings.audio_device),
+                fetchUsbDevices(),
+                fetchVideoDevices(savedSettings.video_device, savedSettings.input_format),
+            ]);
+
+            wirePersistence();
+            updateStatus();
+            loadFiles();
+            connectLogs();
+            setInterval(updateStatus, 2000);
+            setInterval(loadFiles, 5000);
+        }
+        init();
     </script>
 </body>
 </html>
-""" 
+"""
