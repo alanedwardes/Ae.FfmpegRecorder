@@ -648,9 +648,8 @@ HTML_PAGE = """
     </details>
 
     <div style="margin-bottom: 1.5em;">
-        <button id="previewToggleBtn">Start Preview</button>
-        <button id="startBtn" disabled>Start Recording</button>
-        <button id="stopBtn" disabled>Stop Recording</button>
+        <button id="previewToggleBtn">&#128247; Start Preview</button>
+        <button id="recordToggleBtn" disabled>&#128308; Start Recording</button>
         <span id="status"></span>
     </div>
 
@@ -786,11 +785,13 @@ HTML_PAGE = """
             const previewing = !!state.previewing;
             const recording = !!state.recording;
             const toggleBtn = document.getElementById('previewToggleBtn');
-            toggleBtn.textContent = previewing ? 'Stop Preview' : 'Start Preview';
+            toggleBtn.textContent = previewing ? '⏹ Stop Preview' : '📷 Start Preview';
             toggleBtn.disabled = recording;
             toggleBtn.onclick = previewing ? stopPreview : startPreview;
-            document.getElementById('startBtn').disabled = previewing || recording;
-            document.getElementById('stopBtn').disabled = !recording;
+            const recBtn = document.getElementById('recordToggleBtn');
+            recBtn.textContent = recording ? '⏹ Stop Recording' : '🔴 Start Recording';
+            recBtn.disabled = previewing;
+            recBtn.onclick = recording ? stopRecording : startRecording;
             document.getElementById('status').innerText = recording ? 'Recording...' : previewing ? 'Previewing...' : 'Idle';
             const section = document.getElementById('previewSection');
             const img = document.getElementById('previewImg');
@@ -912,8 +913,6 @@ HTML_PAGE = """
         }
 
         async function init() {
-            document.getElementById('startBtn').onclick = startRecording;
-            document.getElementById('stopBtn').onclick = stopRecording;
             document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
 
             try {
