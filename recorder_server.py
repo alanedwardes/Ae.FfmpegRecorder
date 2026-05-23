@@ -628,9 +628,9 @@ HTML_PAGE = """
         .field label { font-size: 0.85em; font-weight: bold; }
         .field select { width: 100%; }
         .usb-row { display: flex; align-items: center; gap: 1em; margin-bottom: 1em; }
-        #advanced { margin: 0.5em 0 1em; }
-        #advanced > summary { cursor: pointer; font-weight: bold; padding: 0.4em 0; user-select: none; }
-        #advanced[open] > summary { margin-bottom: 0.5em; }
+        #advanced, #debug { margin: 0.5em 0 1em; }
+        #advanced > summary, #debug > summary { cursor: pointer; font-weight: bold; padding: 0.4em 0; user-select: none; }
+        #advanced[open] > summary, #debug[open] > summary { margin-bottom: 0.5em; }
         #logs { background: #111; color: #0f0; padding: 1em; height: 300px; overflow-y: scroll; font-family: monospace; }
         .file-row { display: flex; align-items: center; gap: 1em; margin-bottom: 0.5em; }
         .file-thumb { height: 60px; width: auto; cursor: pointer; border-radius: 2px; background: #222; }
@@ -670,14 +670,16 @@ HTML_PAGE = """
         <img id="previewImg">
     </div>
 
-    <div class="usb-row" style="margin-top: 1.5em;">
-        <label for="usb_device">USB Device:</label>
-        <select id="usb_device"></select>
-        <button id="resetUsbBtn">Reset USB Device</button>
-    </div>
+    <details id="debug">
+        <summary>Debug</summary>
+        <div class="usb-row">
+            <label for="usb_device">USB Device:</label>
+            <select id="usb_device"></select>
+            <button id="resetUsbBtn">Reset USB Device</button>
+        </div>
+        <div id="logs"></div>
+    </details>
 
-    <h2>Logs</h2>
-    <div id="logs"></div>
     <h2>Recorded Files</h2>
     <div id="files"></div>
     <dialog id="videoModal">
