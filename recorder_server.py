@@ -624,9 +624,8 @@ HTML_PAGE = """
         #videoModal { padding: 0; border: none; border-radius: 4px; background: #000; max-width: 90vw; }
         #videoModal::backdrop { background: rgba(0,0,0,0.75); }
         .modal-close { display: block; margin: 0.4em auto; background: #333; color: #fff; border: none; padding: 0.4em 1.5em; cursor: pointer; border-radius: 3px; }
-        #previewSection { margin-bottom: 1.5em; }
-        #previewImg { display: block; max-width: 100%; height: auto; background: #111; border-radius: 4px; }
-        #previewPlaceholder { display: flex; align-items: center; justify-content: center; width: 640px; max-width: 100%; height: 360px; background: #111; border-radius: 4px; color: #555; font-size: 0.9em; }
+        #previewSection { margin-top: 1em; }
+        #previewImg { display: block; max-width: 100%; height: auto; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -648,16 +647,15 @@ HTML_PAGE = """
         </div>
     </details>
 
-    <div id="previewSection">
-        <img id="previewImg" style="display:none;">
-        <div id="previewPlaceholder">No preview</div>
-    </div>
-
     <div style="margin-bottom: 1.5em;">
-        <button id="previewStopBtn" disabled>Stop Preview</button>
+        <button id="previewToggleBtn">Start Preview</button>
         <button id="startBtn" disabled>Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
         <span id="status"></span>
+    </div>
+
+    <div id="previewSection" style="display:none;">
+        <img id="previewImg">
     </div>
 
     <div class="usb-row" style="margin-top: 1.5em;">
@@ -787,22 +785,21 @@ HTML_PAGE = """
         function applyState(state) {
             const previewing = !!state.previewing;
             const recording = !!state.recording;
-            document.getElementById('previewStopBtn').disabled = !previewing;
+            const toggleBtn = document.getElementById('previewToggleBtn');
+            toggleBtn.textContent = previewing ? 'Stop Preview' : 'Start Preview';
+            toggleBtn.disabled = recording;
+            toggleBtn.onclick = previewing ? stopPreview : startPreview;
             document.getElementById('startBtn').disabled = previewing || recording;
             document.getElementById('stopBtn').disabled = !recording;
             document.getElementById('status').innerText = recording ? 'Recording...' : previewing ? 'Previewing...' : 'Idle';
+            const section = document.getElementById('previewSection');
             const img = document.getElementById('previewImg');
-            const placeholder = document.getElementById('previewPlaceholder');
             if (previewing) {
-                if (!img.src.endsWith('/preview/stream')) {
-                    img.src = '/preview/stream';
-                }
-                img.style.display = 'block';
-                placeholder.style.display = 'none';
+                if (!img.src.endsWith('/preview/stream')) img.src = '/preview/stream';
+                section.style.display = 'block';
             } else {
-                img.style.display = 'none';
+                section.style.display = 'none';
                 img.src = '';
-                placeholder.style.display = 'flex';
             }
         }
         function startRecording() {
@@ -920,7 +917,6 @@ HTML_PAGE = """
         async function init() {
             document.getElementById('startBtn').onclick = startRecording;
             document.getElementById('stopBtn').onclick = stopRecording;
-            document.getElementById('previewStopBtn').onclick = stopPreview;
             document.getElementById('resetUsbBtn').onclick = resetUsbDevice;
 
             try {
@@ -945,9 +941,6 @@ HTML_PAGE = """
             loadFiles();
             setInterval(loadFiles, 5000);
 
-            // Auto-start preview once devices are loaded; ignore errors (e.g. no device connected)
-            const video_device = document.getElementById('video_device').value;
-            if (video_device) startPreview();
         }
         init();
     </script>
