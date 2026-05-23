@@ -467,6 +467,29 @@ def delete_file(filename: str):
     os.remove(file_path)
     return {"deleted": True}
 
+@app.get("/thumbnails/{filename}")
+def get_thumbnail(filename: str, request: Request):
+    file_path = os.path.join(RECORDINGS_DIR, filename)
+    if not os.path.exists(file_path):
+        return JSONResponse({"error": "File not found"}, status_code=404)
+    mtime = os.path.getmtime(file_path)
+    last_modified = datetime.utcfromtimestamp(mtime).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    if request.headers.get("if-modified-since") == last_modified:
+        return Response(status_code=304)
+    try:
+        result = subprocess.run(
+            ['/usr/bin/ffmpeg', '-ss', '1', '-i', file_path, '-vframes', '1', '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1'],
+            capture_output=True, timeout=15
+        )
+        if result.returncode != 0 or not result.stdout:
+            return JSONResponse({"error": "Could not generate thumbnail"}, status_code=500)
+        return Response(content=result.stdout, media_type="image/jpeg", headers={
+            "Cache-Control": "max-age=86400",
+            "Last-Modified": last_modified,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 
 # --- Simple HTML/JS Frontend ---
@@ -486,7 +509,11 @@ HTML_PAGE = """
         #advanced > summary { cursor: pointer; font-weight: bold; padding: 0.4em 0; user-select: none; }
         #advanced[open] > summary { margin-bottom: 0.5em; }
         #logs { background: #111; color: #0f0; padding: 1em; height: 300px; overflow-y: scroll; font-family: monospace; }
-        .file-row { display: flex; align-items: center; gap: 1em; margin-bottom: 0.25em; }
+        .file-row { display: flex; align-items: center; gap: 1em; margin-bottom: 0.5em; }
+        .file-thumb { height: 60px; width: auto; cursor: pointer; border-radius: 2px; background: #222; }
+        #videoModal { padding: 0; border: none; border-radius: 4px; background: #000; max-width: 90vw; }
+        #videoModal::backdrop { background: rgba(0,0,0,0.75); }
+        .modal-close { display: block; margin: 0.4em auto; background: #333; color: #fff; border: none; padding: 0.4em 1.5em; cursor: pointer; border-radius: 3px; }
     </style>
 </head>
 <body>
@@ -524,6 +551,10 @@ HTML_PAGE = """
     <div id="logs"></div>
     <h2>Recorded Files</h2>
     <div id="files"></div>
+    <dialog id="videoModal">
+        <video id="modalVideo" controls autoplay style="display:block;max-width:85vw;max-height:80vh;"></video>
+        <button class="modal-close" onclick="closeVideoModal()">Close</button>
+    </dialog>
     <script>
         let ws;
         let savedSettings = {};
@@ -676,6 +707,9 @@ HTML_PAGE = """
                 logs.scrollTop = logs.scrollHeight;
             };
         }
+        const BROWSER_PLAYABLE = new Set(['mp4', 'webm', 'ogg', 'mov']);
+        function fileExt(name) { return name.split('.').pop().toLowerCase(); }
+
         function loadFiles() {
             fetch('/files').then(r => r.json()).then(files => {
                 const filesDiv = document.getElementById('files');
@@ -683,8 +717,18 @@ HTML_PAGE = """
                 files.forEach(f => {
                     const row = document.createElement('div');
                     row.className = 'file-row';
-                    row.innerHTML = `<span>${f.name}</span> <span>${(f.size/1024/1024).toFixed(2)} MB</span> <span>${new Date(f.mtime*1000).toLocaleString()}</span>` +
-                        `<a href="/files/${f.name}" download>Download</a>` +
+                    const canPlay = BROWSER_PLAYABLE.has(fileExt(f.name));
+                    const playBtn = canPlay
+                        ? `<button onclick="openVideoModal('${f.name}')">&#9654; Play</button>`
+                        : '';
+                    row.innerHTML =
+                        `<img class="file-thumb" src="/thumbnails/${encodeURIComponent(f.name)}" alt="" loading="lazy"` +
+                        (canPlay ? ` onclick="openVideoModal('${f.name}')" title="Play"` : '') + `>` +
+                        `<span>${f.name}</span>` +
+                        `<span>${(f.size/1024/1024).toFixed(2)} MB</span>` +
+                        `<span>${new Date(f.mtime*1000).toLocaleString()}</span>` +
+                        playBtn +
+                        `<a href="/files/${encodeURIComponent(f.name)}" download>Download</a>` +
                         `<button onclick="deleteFile('${f.name}')">Delete</button>`;
                     filesDiv.appendChild(row);
                 });
@@ -694,6 +738,23 @@ HTML_PAGE = """
             fetch('/files/' + encodeURIComponent(name), {method: 'DELETE'})
                 .then(r => r.json()).then(d => { if (d.deleted) loadFiles(); });
         }
+        function openVideoModal(name) {
+            const video = document.getElementById('modalVideo');
+            video.src = '/files/' + encodeURIComponent(name);
+            document.getElementById('videoModal').showModal();
+        }
+        function closeVideoModal() {
+            const modal = document.getElementById('videoModal');
+            const video = document.getElementById('modalVideo');
+            modal.close();
+            video.pause();
+            video.src = '';
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('videoModal').addEventListener('click', e => {
+                if (e.target === e.currentTarget) closeVideoModal();
+            });
+        });
 
         function wirePersistence() {
             const map = {
